@@ -1,0 +1,1357 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChessBet — Échecs & Paris</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+:root{--gold:#d4a017;--gold-light:#e8c04a;--gold-dim:#8a6510;--bg:#0d0d0d;--bg2:#141414;--bg3:#1c1c1c;--border:rgba(212,160,23,0.2);--border2:rgba(212,160,23,0.4);--text:#e8e4d8;--muted:#7a7060;--wsq:#f0d9b5;--dsq:#b58863;--green:#1a4a1a;--green2:#4caf50;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'Georgia',serif;min-height:100vh;}
+
+/* NAV */
+nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5rem;height:54px;border-bottom:0.5px solid var(--border);background:var(--bg2);position:sticky;top:0;z-index:50;}
+.logo{font-size:1.2rem;letter-spacing:3px;color:var(--gold);font-weight:700;cursor:pointer;}
+.logo span{color:var(--text);font-weight:400;}
+.nav-right{display:flex;align-items:center;gap:10px;}
+.nav-balance{font-size:12px;color:var(--muted);font-family:monospace;}
+.nav-balance b{color:var(--gold);font-size:14px;}
+.nav-user{font-size:12px;color:var(--muted);letter-spacing:1px;}
+
+/* PAGES */
+.page{display:none;}.page.active{display:block;}
+
+/* BOUTONS */
+.btn{border:none;border-radius:4px;cursor:pointer;font-family:'Georgia',serif;font-size:13px;letter-spacing:1px;transition:all .18s;padding:9px 18px;font-weight:700;}
+.btn-gold{background:var(--gold);color:#000;}.btn-gold:hover{background:var(--gold-light);}
+.btn-ghost{background:transparent;color:var(--gold);border:0.5px solid var(--border2);}.btn-ghost:hover{background:var(--gold);color:#000;}
+.btn-green{background:var(--green);color:var(--green2);border:0.5px solid var(--green2);}.btn-green:hover{background:#2d6a2d;}
+.btn-red{background:#3a1010;color:#e44;border:0.5px solid #8b2020;}.btn-red:hover{background:#8b2020;color:#fff;}
+.btn-sm{padding:5px 12px;font-size:12px;}
+.btn-full{width:100%;}
+
+/* INPUTS */
+.field{margin-bottom:1rem;}
+.field label{display:block;font-size:11px;color:var(--muted);letter-spacing:1px;margin-bottom:5px;}
+.field input,.field select{width:100%;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text);padding:10px 12px;border-radius:4px;font-size:14px;font-family:monospace;}
+.field input:focus,.field select:focus{outline:none;border-color:var(--gold);}
+
+/* ==================== AUTH PAGE ==================== */
+#page-auth{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem;}
+.auth-box{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:2.5rem;width:100%;max-width:380px;}
+.auth-box h1{color:var(--gold);font-size:1.8rem;letter-spacing:4px;text-align:center;margin-bottom:.3rem;}
+.auth-box p{text-align:center;color:var(--muted);font-size:13px;margin-bottom:2rem;}
+.auth-tabs{display:flex;gap:0;margin-bottom:2rem;border-radius:6px;overflow:hidden;border:0.5px solid var(--border2);}
+.auth-tab{flex:1;padding:8px;text-align:center;cursor:pointer;font-size:13px;background:var(--bg3);color:var(--muted);letter-spacing:1px;transition:all .18s;}
+.auth-tab.active{background:var(--gold);color:#000;font-weight:700;}
+.auth-error{background:rgba(228,68,68,0.1);border:0.5px solid #8b2020;color:#e44;border-radius:4px;padding:8px 12px;font-size:12px;margin-bottom:1rem;display:none;}
+.auth-switch{text-align:center;font-size:12px;color:var(--muted);margin-top:1rem;}
+.auth-switch span{color:var(--gold);cursor:pointer;}
+
+/* ==================== LOBBY ==================== */
+#page-lobby{max-width:1000px;margin:0 auto;padding:2rem 1rem;}
+.lobby-header{text-align:center;margin-bottom:2rem;}
+.lobby-header h1{font-size:2rem;color:var(--gold);letter-spacing:4px;}
+.lobby-header p{color:var(--muted);font-size:13px;margin-top:.4rem;}
+
+.stats-bar{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);border:0.5px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:1.5rem;}
+.stat{background:var(--bg2);padding:1rem;text-align:center;}
+.stat .n{font-size:1.5rem;font-family:monospace;color:var(--gold);}
+.stat .l{font-size:11px;color:var(--muted);letter-spacing:1px;margin-top:2px;}
+
+.card{background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:1.4rem;margin-bottom:1.2rem;}
+.card h2{font-size:12px;color:var(--gold);letter-spacing:2px;margin-bottom:1.2rem;}
+.create-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:.8rem;align-items:end;}
+.preview-txt{font-size:11px;color:var(--muted);margin-top:8px;}
+.preview-txt b{color:var(--gold);}
+
+.deposit-row{display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;}
+.deposit-row>div{flex:1;min-width:140px;}
+.quick-bets{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+.qb{padding:4px 12px;border-radius:4px;font-size:12px;font-family:monospace;cursor:pointer;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text);transition:all .18s;}
+.qb:hover{background:var(--gold);color:#000;border-color:var(--gold);}
+
+/* Tableau lobby */
+.tbl{width:100%;border-collapse:collapse;}
+.tbl th{font-size:10px;color:var(--muted);letter-spacing:2px;text-align:left;padding:8px 10px;border-bottom:0.5px solid var(--border);}
+.tbl td{padding:10px;border-bottom:0.5px solid rgba(255,255,255,0.04);font-size:13px;vertical-align:middle;}
+.tbl tr:hover td{background:rgba(212,160,23,0.04);}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;letter-spacing:1px;}
+.badge-wait{background:rgba(212,160,23,0.12);color:var(--gold);}
+.badge-live{background:rgba(45,106,45,0.2);color:var(--green2);}
+.amt{font-family:monospace;color:var(--gold);font-weight:700;}
+.muted-txt{color:var(--muted);font-size:11px;}
+
+/* ==================== GAME PAGE ==================== */
+#page-game{max-width:1100px;margin:0 auto;padding:1.5rem 1rem;}
+.game-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.2rem;}
+.game-header h2{font-size:1.1rem;color:var(--gold);}
+.game-header p{font-size:12px;color:var(--muted);margin-top:2px;}
+.game-layout{display:grid;grid-template-columns:auto 1fr;gap:1.4rem;}
+
+/* Plateau */
+#board{display:grid;grid-template-columns:repeat(8,64px);grid-template-rows:repeat(8,64px);border:2px solid var(--gold-dim);}
+.sq{width:64px;height:64px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;user-select:none;transition:filter .1s;}
+.sq.light{background:var(--wsq);}.sq.dark{background:var(--dsq);}
+.sq.selected{outline:3px solid var(--gold);outline-offset:-3px;}
+.sq.check-king{background:#b44 !important;}
+.sq.possible::after{content:'';position:absolute;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,0.22);pointer-events:none;}
+.sq.possible.has-piece::after{width:100%;height:100%;border-radius:0;background:rgba(0,0,0,0.18);}
+.sq:hover{filter:brightness(1.08);}
+.sq.last-move{box-shadow:inset 0 0 0 3px rgba(212,160,23,0.5);}
+.coord-file{display:flex;}.coord-file span{width:64px;text-align:center;font-size:11px;color:var(--muted);padding-top:4px;}
+.coord-rank{display:flex;flex-direction:column;}.coord-rank span{height:64px;line-height:64px;font-size:11px;color:var(--muted);padding-right:6px;text-align:right;}
+
+/* Side panel */
+.side-panel{display:flex;flex-direction:column;gap:.8rem;}
+.panel-card{background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:1rem 1.2rem;}
+.panel-card h3{font-size:11px;color:var(--muted);letter-spacing:2px;margin-bottom:.8rem;}
+.player-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0;}
+.av-w{background:var(--wsq);color:#333;}.av-b{background:#2a2a2a;color:var(--wsq);border:1px solid #555;}
+.player-name{font-size:14px;font-weight:700;}.player-sub{font-size:11px;color:var(--gold);font-family:monospace;}
+.turn-dot{width:8px;height:8px;border-radius:50%;margin-left:auto;flex-shrink:0;}
+.turn-dot.on{background:var(--green2);box-shadow:0 0 6px var(--green2);}.turn-dot.off{background:var(--muted);}
+
+/* Timers */
+.timer-box{display:flex;gap:8px;}
+.timer-side{flex:1;background:var(--bg3);border-radius:6px;padding:.6rem;text-align:center;}
+.timer-label{font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:2px;}
+.timer-val{font-size:1.5rem;font-family:monospace;font-weight:700;letter-spacing:2px;color:var(--text);}
+.timer-side.my-turn .timer-val{color:var(--gold);}
+.timer-side.low .timer-val{color:#e44 !important;animation:blink .8s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Pot */
+.pot-box{text-align:center;background:var(--bg3);border-radius:6px;padding:.8rem;}
+.pot-val{font-size:1.8rem;font-family:monospace;color:var(--gold);}
+.pot-sub{font-size:11px;color:var(--muted);margin-top:4px;}
+
+/* Moves */
+.moves-list{max-height:150px;overflow-y:auto;font-family:monospace;font-size:12px;}
+.move-pair{display:flex;gap:4px;margin-bottom:2px;}
+.move-num{color:var(--muted);min-width:22px;}
+.move-txt{background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;}
+
+/* Status bar */
+.status-bar{background:var(--bg3);border-radius:6px;padding:.6rem 1rem;font-size:13px;text-align:center;min-height:36px;line-height:1.4;}
+.s-check{color:#f0a020;font-weight:700;}.s-mate{color:#e44;font-weight:700;}.s-draw{color:var(--gold);}
+
+/* Actions */
+.action-row{display:flex;gap:.5rem;}
+
+/* Waiting overlay */
+.waiting-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.7);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:4px;z-index:10;}
+.waiting-overlay p{color:var(--gold);font-size:1rem;letter-spacing:2px;margin-bottom:1rem;}
+.spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ==================== ADMIN PAGE ==================== */
+#page-admin{max-width:900px;margin:0 auto;padding:2rem 1rem;}
+#page-admin h1{font-size:1.4rem;color:var(--gold);letter-spacing:3px;margin-bottom:2rem;}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:0.5px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:2rem;}
+.kpi{background:var(--bg2);padding:1.2rem;}.kpi .kn{font-size:1.8rem;font-family:monospace;color:var(--gold);}.kpi .kl{font-size:11px;color:var(--muted);letter-spacing:1px;margin-top:4px;}
+.tx-row{display:grid;grid-template-columns:1fr 1.4fr 1fr 1fr;padding:10px 1rem;border-bottom:0.5px solid rgba(255,255,255,0.04);font-size:12px;}
+.tx-head{font-size:10px;color:var(--muted);letter-spacing:1px;}
+.tx-comm{color:var(--gold);font-family:monospace;}
+.withdraw-box{background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:1.5rem;margin-top:1.5rem;}
+.withdraw-box h2{font-size:12px;color:var(--muted);letter-spacing:2px;margin-bottom:1rem;}
+.comm-total{font-size:2.2rem;font-family:monospace;color:var(--gold);margin-bottom:1.5rem;}
+.comm-total small{font-size:12px;color:var(--muted);display:block;letter-spacing:1px;margin-bottom:4px;}
+
+/* ==================== MODALS ==================== */
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:200;align-items:center;justify-content:center;}
+.overlay.show{display:flex;}
+.modal{background:var(--bg2);border:0.5px solid var(--border2);border-radius:12px;padding:2rem;text-align:center;max-width:380px;width:90%;}
+.modal h2{font-size:1.4rem;color:var(--gold);margin-bottom:.5rem;}
+.modal p{font-size:13px;color:var(--muted);margin-bottom:1.5rem;}
+.payout-list{background:var(--bg3);border-radius:8px;padding:1rem;margin-bottom:1.5rem;text-align:left;}
+.payout-row{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;}
+.payout-win{color:var(--gold);font-family:monospace;font-weight:700;}
+.payout-comm{color:var(--muted);}
+
+/* Promo modal */
+.promo-grid{display:flex;gap:.8rem;justify-content:center;margin-bottom:.5rem;}
+.promo-btn{background:var(--bg3);border:0.5px solid var(--border2);border-radius:8px;padding:1rem .8rem;cursor:pointer;text-align:center;min-width:70px;transition:all .18s;}
+.promo-btn:hover{border-color:var(--gold);background:rgba(212,160,23,0.08);}
+.promo-icon{font-size:32px;display:block;margin-bottom:4px;}
+.promo-name{font-size:11px;color:var(--muted);}
+
+/* Draw offer banner */
+.draw-banner{background:rgba(212,160,23,0.1);border:0.5px solid var(--gold-dim);border-radius:6px;padding:.7rem 1rem;display:none;text-align:center;font-size:13px;margin-top:.5rem;}
+.draw-banner.show{display:block;}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;right:24px;background:#1a4a1a;border:0.5px solid var(--green2);color:var(--green2);padding:12px 20px;border-radius:8px;font-size:13px;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none;}
+.toast.show{opacity:1;}
+
+@media(max-width:720px){
+  .game-layout{grid-template-columns:1fr;}
+  #board{grid-template-columns:repeat(8,42px);grid-template-rows:repeat(8,42px);}
+  .sq{width:42px;height:42px;}.sq svg{width:34px;height:34px;}
+  .coord-file span{width:42px;}.coord-rank span{height:42px;line-height:42px;}
+  .create-row{grid-template-columns:1fr 1fr;}
+  .kpi-grid{grid-template-columns:1fr 1fr;}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="nav" style="display:none;">
+  <div class="logo" onclick="showPage('lobby')">CHESS<span>BET</span></div>
+  <div class="nav-right">
+    <span class="nav-user" id="nav-username"></span>
+    <span class="nav-balance">Solde : <b id="nav-balance">€ 0</b></span>
+    <button class="btn btn-green btn-sm" onclick="openDepositModal()">+ Dépôt</button>
+    <button class="btn btn-ghost btn-sm" onclick="showPage('admin')">Admin</button>
+    <button class="btn btn-ghost btn-sm" onclick="logout()">Déco</button>
+  </div>
+</nav>
+
+<!-- ==================== AUTH ==================== -->
+<div class="page active" id="page-auth">
+  <div id="auth-screen" style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem;">
+    <div class="auth-box">
+      <h1>♟ CHESSBET</h1>
+      <p>Jouez aux échecs. Pariez. Gagnez.</p>
+      <div class="auth-tabs">
+        <div class="auth-tab active" onclick="switchTab('login')">CONNEXION</div>
+        <div class="auth-tab" onclick="switchTab('register')">INSCRIPTION</div>
+      </div>
+      <div class="auth-error" id="auth-error"></div>
+
+      <!-- Login -->
+      <div id="form-login">
+        <div class="field"><label>EMAIL</label><input type="email" id="login-email" placeholder="ton@email.com"></div>
+        <div class="field"><label>MOT DE PASSE</label><input type="password" id="login-pass" placeholder="••••••••"></div>
+        <button class="btn btn-gold btn-full" onclick="doLogin()">SE CONNECTER →</button>
+      </div>
+
+      <!-- Register -->
+      <div id="form-register" style="display:none;">
+        <div class="field"><label>PSEUDO</label><input type="text" id="reg-username" placeholder="MonPseudo"></div>
+        <div class="field"><label>EMAIL</label><input type="email" id="reg-email" placeholder="ton@email.com"></div>
+        <div class="field"><label>MOT DE PASSE</label><input type="password" id="reg-pass" placeholder="6 caractères minimum"></div>
+        <button class="btn btn-gold btn-full" onclick="doRegister()">CRÉER MON COMPTE →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== LOBBY ==================== -->
+<div class="page" id="page-lobby">
+  <div style="max-width:1000px;margin:0 auto;padding:2rem 1rem;">
+    <div class="lobby-header">
+      <h1>♟ LOBBY</h1>
+      <p>Misez, jouez, gagnez — <span style="color:var(--gold)">5% de commission</span> sur chaque pot</p>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat"><div class="n" id="stat-actives">0</div><div class="l">PARTIES ACTIVES</div></div>
+      <div class="stat"><div class="n" id="stat-volume">€ 0</div><div class="l">VOLUME TOTAL</div></div>
+      <div class="stat"><div class="n" id="stat-commission">€ 0</div><div class="l">COMMISSIONS</div></div>
+    </div>
+
+    <!-- Dépôt -->
+    <div class="card">
+      <h2>RECHARGER MON COMPTE</h2>
+      <div class="deposit-row">
+        <div class="field" style="margin:0;flex:1;">
+          <label>MONTANT (€)</label>
+          <input type="number" id="dep-amount" value="50" min="5" step="5">
+        </div>
+        <div class="field" style="margin:0;flex:1;">
+          <label>MÉTHODE</label>
+          <select id="dep-method">
+            <option>💳 Carte bancaire</option>
+            <option>⚡ PayPal</option>
+            <option>🏦 Virement SEPA</option>
+          </select>
+        </div>
+        <div style="padding-bottom:0;">
+          <button class="btn btn-green" onclick="doDeposit()">DÉPOSER →</button>
+        </div>
+      </div>
+      <div class="quick-bets" style="margin-top:10px;">
+        <span style="font-size:11px;color:var(--muted);align-self:center;">RAPIDE :</span>
+        <button class="qb" onclick="quickDep(20)">+€ 20</button>
+        <button class="qb" onclick="quickDep(50)">+€ 50</button>
+        <button class="qb" onclick="quickDep(100)">+€ 100</button>
+        <button class="qb" onclick="quickDep(250)">+€ 250</button>
+        <button class="qb" onclick="quickDep(500)">+€ 500</button>
+      </div>
+    </div>
+
+    <!-- Créer partie -->
+    <div class="card">
+      <h2>CRÉER UNE PARTIE</h2>
+      <div class="create-row">
+        <div class="field" style="margin:0;">
+          <label>MISE (€)</label>
+          <input type="number" id="create-bet" value="10" min="5" step="5" oninput="updatePreview()">
+        </div>
+        <div class="field" style="margin:0;">
+          <label>CADENCE</label>
+          <select id="create-time" onchange="updatePreview()">
+            <option value="60">Bullet 1+0</option>
+            <option value="180">Blitz 3+0</option>
+            <option value="300" selected>Blitz 5+0</option>
+            <option value="600">Rapide 10+0</option>
+            <option value="1800">Classique 30+0</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0;">
+          <label>COULEUR</label>
+          <select id="create-color">
+            <option value="rand">Aléatoire ♟</option>
+            <option value="w">Blancs ♔</option>
+            <option value="b">Noirs ♚</option>
+          </select>
+        </div>
+        <div style="padding-bottom:0;">
+          <button class="btn btn-gold" onclick="createGame()">CRÉER →</button>
+        </div>
+      </div>
+      <p class="preview-txt" id="preview-txt">Pot : <b>€ 20</b> — Gain net si victoire : <b>€ 19</b></p>
+    </div>
+
+    <!-- Tableau parties disponibles -->
+    <div class="card" style="padding:0;overflow:hidden;">
+      <table class="tbl" style="width:100%;">
+        <thead><tr>
+          <th style="padding:12px;">JOUEUR</th>
+          <th>CADENCE</th><th>MISE</th><th>POT</th><th>GAIN NET</th><th>STATUT</th><th></th>
+        </tr></thead>
+        <tbody id="lobby-tbody">
+          <tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted);">Aucune partie disponible</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== GAME ==================== -->
+<div class="page" id="page-game">
+  <div style="max-width:1100px;margin:0 auto;padding:1.5rem 1rem;">
+    <div class="game-header">
+      <div>
+        <h2 id="game-title">ChessBet</h2>
+        <p id="game-sub">Chargement...</p>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="leaveGame()">← Quitter</button>
+    </div>
+
+    <div class="game-layout">
+      <!-- Plateau -->
+      <div style="position:relative;">
+        <div id="waiting-overlay" class="waiting-overlay">
+          <p>EN ATTENTE D'UN ADVERSAIRE...</p>
+          <div class="spinner"></div>
+          <button class="btn btn-ghost btn-sm" style="margin-top:1rem;" onclick="cancelGame()">Annuler</button>
+        </div>
+        <div style="display:flex;gap:4px;">
+          <div class="coord-rank" id="coord-rank">
+            <span>8</span><span>7</span><span>6</span><span>5</span>
+            <span>4</span><span>3</span><span>2</span><span>1</span>
+          </div>
+          <div>
+            <div id="board"></div>
+            <div class="coord-file" id="coord-file">
+              <span>a</span><span>b</span><span>c</span><span>d</span>
+              <span>e</span><span>f</span><span>g</span><span>h</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Side panel -->
+      <div class="side-panel">
+        <!-- Timers -->
+        <div class="panel-card">
+          <h3>CHRONOMÈTRES</h3>
+          <div class="timer-box">
+            <div class="timer-side" id="timer-top-box">
+              <div class="timer-label" id="timer-top-label">ADVERSAIRE</div>
+              <div class="timer-val" id="timer-top">5:00</div>
+            </div>
+            <div class="timer-side my-turn" id="timer-bot-box">
+              <div class="timer-label" id="timer-bot-label">VOUS</div>
+              <div class="timer-val" id="timer-bot">5:00</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Joueurs -->
+        <div class="panel-card">
+          <h3>JOUEURS</h3>
+          <div class="player-row">
+            <div class="avatar av-b" id="av-top">?</div>
+            <div>
+              <div class="player-name" id="pname-top">...</div>
+              <div class="player-sub" id="pbet-top">€ 0</div>
+            </div>
+            <div class="turn-dot off" id="turn-top"></div>
+          </div>
+          <div style="height:1px;background:var(--border);margin:.4rem 0;"></div>
+          <div class="player-row">
+            <div class="avatar av-w" id="av-bot">?</div>
+            <div>
+              <div class="player-name" id="pname-bot">Vous</div>
+              <div class="player-sub" id="pbet-bot">€ 0</div>
+            </div>
+            <div class="turn-dot on" id="turn-bot"></div>
+          </div>
+        </div>
+
+        <!-- Pot -->
+        <div class="panel-card">
+          <h3>POT</h3>
+          <div class="pot-box">
+            <div class="pot-val" id="pot-display">€ 0</div>
+            <div class="pot-sub">Gain vainqueur : <span id="gain-display" style="color:var(--gold)">€ 0</span> · Commission : <span id="comm-display">€ 0</span></div>
+          </div>
+        </div>
+
+        <!-- Coups -->
+        <div class="panel-card">
+          <h3>COUPS</h3>
+          <div class="moves-list" id="moves-list"><span style="color:var(--muted);">La partie commence...</span></div>
+        </div>
+
+        <!-- Nulle proposée -->
+        <div class="draw-banner" id="draw-banner">
+          ½ L'adversaire propose la nulle !
+          <div style="display:flex;gap:.5rem;justify-content:center;margin-top:.6rem;">
+            <button class="btn btn-gold btn-sm" onclick="acceptDraw()">Accepter</button>
+            <button class="btn btn-ghost btn-sm" onclick="declineDraw()">Refuser</button>
+          </div>
+        </div>
+
+        <div class="status-bar" id="status-bar">En attente...</div>
+
+        <div class="action-row">
+          <button class="btn btn-ghost" style="flex:1;" onclick="offerDraw()">½ Nulle</button>
+          <button class="btn btn-red"   style="flex:1;" onclick="doResign()">⚑ Abandonner</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== ADMIN ==================== -->
+<div class="page" id="page-admin">
+  <div style="max-width:900px;margin:0 auto;padding:2rem 1rem;">
+    <h1>TABLEAU DE BORD</h1>
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kn" id="kpi-games">—</div><div class="kl">PARTIES JOUÉES</div></div>
+      <div class="kpi"><div class="kn" id="kpi-vol">—</div><div class="kl">VOLUME TOTAL</div></div>
+      <div class="kpi"><div class="kn" id="kpi-comm">—</div><div class="kl">COMMISSIONS</div></div>
+      <div class="kpi"><div class="kn" id="kpi-users">—</div><div class="kl">UTILISATEURS</div></div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="tx-row tx-head" style="padding:12px 1rem;border-bottom:0.5px solid var(--border);">
+        <span>PARTIE</span><span>JOUEURS</span><span>POT</span><span>COMMISSION</span>
+      </div>
+      <div id="tx-list"></div>
+    </div>
+    <div class="withdraw-box">
+      <h2>COMMISSIONS DISPONIBLES</h2>
+      <div class="comm-total"><small>TOTAL ACCUMULÉ</small><span id="comm-total-val">€ 0</span></div>
+      <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;">
+        <div class="field" style="margin:0;flex:1;min-width:200px;">
+          <label>IBAN</label>
+          <input type="text" id="iban-input" placeholder="FR76 3000 ...">
+        </div>
+        <button class="btn btn-gold" onclick="doWithdraw()">RETIRER →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MODALS ==================== -->
+<!-- Résultat -->
+<div class="overlay" id="result-overlay">
+  <div class="modal">
+    <h2 id="result-title">—</h2>
+    <p id="result-msg">—</p>
+    <div class="payout-list">
+      <div class="payout-row"><span>Pot total</span><span id="r-pot">—</span></div>
+      <div class="payout-row payout-win"><span>Votre gain</span><span id="r-gain">—</span></div>
+      <div class="payout-row payout-comm"><span>Commission (5%)</span><span id="r-comm">—</span></div>
+    </div>
+    <button class="btn btn-gold btn-full" onclick="closeResult()">RETOUR AU LOBBY</button>
+  </div>
+</div>
+
+<!-- Promotion -->
+<div class="overlay" id="promo-overlay">
+  <div class="modal">
+    <h2 style="margin-bottom:1rem;">PROMOTION</h2>
+    <p>Choisissez la pièce de promotion :</p>
+    <div class="promo-grid">
+      <div class="promo-btn" onclick="doPromo('Q','q')"><span class="promo-icon" id="pi-q">♕</span><span class="promo-name">Dame</span></div>
+      <div class="promo-btn" onclick="doPromo('R','r')"><span class="promo-icon" id="pi-r">♖</span><span class="promo-name">Tour</span></div>
+      <div class="promo-btn" onclick="doPromo('B','b')"><span class="promo-icon" id="pi-b">♗</span><span class="promo-name">Fou</span></div>
+      <div class="promo-btn" onclick="doPromo('N','n')"><span class="promo-icon" id="pi-n">♘</span><span class="promo-name">Cavalier</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm -->
+<div class="overlay" id="confirm-overlay">
+  <div class="modal">
+    <h2 id="confirm-title">Confirmer</h2>
+    <p id="confirm-msg"></p>
+    <div style="display:flex;gap:.8rem;">
+      <button class="btn btn-red btn-full" id="confirm-ok">Confirmer</button>
+      <button class="btn btn-ghost btn-full" onclick="closeConfirm()">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dépôt modal -->
+<div class="overlay" id="deposit-overlay">
+  <div class="modal">
+    <h2>💳 DÉPÔT</h2>
+    <p>Solde actuel : <b id="dep-modal-bal" style="color:var(--gold)">€ 0</b></p>
+    <div class="field"><label>MONTANT (€)</label><input type="number" id="dep-modal-amt" value="50" min="5" step="5"></div>
+    <div class="quick-bets" style="justify-content:center;margin-bottom:1rem;">
+      <button class="qb" onclick="document.getElementById('dep-modal-amt').value=20">€ 20</button>
+      <button class="qb" onclick="document.getElementById('dep-modal-amt').value=50">€ 50</button>
+      <button class="qb" onclick="document.getElementById('dep-modal-amt').value=100">€ 100</button>
+      <button class="qb" onclick="document.getElementById('dep-modal-amt').value=500">€ 500</button>
+    </div>
+    <button class="btn btn-gold btn-full" onclick="doDepositModal()" style="margin-bottom:.8rem;">DÉPOSER →</button>
+    <button class="btn btn-ghost btn-full" onclick="closeDepositModal()">Annuler</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+//  ÉTAT GLOBAL
+// ============================================================
+let token    = localStorage.getItem('cb_token') || null;
+let me       = JSON.parse(localStorage.getItem('cb_user') || 'null');
+let balance  = me?.balance || 0;
+let socket   = null;
+
+// État partie
+let myColor      = null; // 'w' | 'b'
+let currentGameId= null;
+let gameStarted  = false;
+let waitingGame  = false;
+
+// Timers UI
+let timerInterval = null;
+let timers = { w: 300, b: 300 };
+let myTurn = false;
+
+const COMM = 0.05;
+
+// ============================================================
+//  INIT
+// ============================================================
+window.onload = () => {
+  if (token && me) {
+    initSocket();
+    showLoggedIn();
+    showPage('lobby');
+    loadAdminStats();
+  } else {
+    document.getElementById('page-auth').classList.add('active');
+  }
+};
+
+// ============================================================
+//  AUTH
+// ============================================================
+function switchTab(tab) {
+  document.querySelectorAll('.auth-tab').forEach((t,i) => t.classList.toggle('active', (i===0&&tab==='login')||(i===1&&tab==='register')));
+  document.getElementById('form-login').style.display    = tab==='login'    ? '' : 'none';
+  document.getElementById('form-register').style.display = tab==='register' ? '' : 'none';
+  document.getElementById('auth-error').style.display    = 'none';
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const pass  = document.getElementById('login-pass').value;
+  const r = await api('/api/auth/login', 'POST', { email, password: pass });
+  if (r.error) return showAuthError(r.error);
+  saveSession(r.token, r.user);
+  initSocket();
+  showLoggedIn();
+  showPage('lobby');
+}
+
+async function doRegister() {
+  const username = document.getElementById('reg-username').value.trim();
+  const email    = document.getElementById('reg-email').value.trim();
+  const pass     = document.getElementById('reg-pass').value;
+  const r = await api('/api/auth/register', 'POST', { username, email, password: pass });
+  if (r.error) return showAuthError(r.error);
+  saveSession(r.token, r.user);
+  initSocket();
+  showLoggedIn();
+  showPage('lobby');
+}
+
+function saveSession(t, user) {
+  token = t; me = user; balance = user.balance;
+  localStorage.setItem('cb_token', t);
+  localStorage.setItem('cb_user', JSON.stringify(user));
+}
+
+function showLoggedIn() {
+  document.getElementById('nav').style.display = 'flex';
+  document.getElementById('nav-username').textContent = me.username;
+  updateBalanceUI();
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function logout() {
+  localStorage.removeItem('cb_token');
+  localStorage.removeItem('cb_user');
+  if (socket) socket.disconnect();
+  location.reload();
+}
+
+// ============================================================
+//  SOCKET.IO
+// ============================================================
+function initSocket() {
+  socket = io({ auth: { token } });
+
+  socket.on('connect', () => console.log('✅ Socket connecté'));
+  socket.on('connect_error', e => console.error('Socket erreur:', e.message));
+
+  // Lobby en temps réel
+  socket.on('lobby_update', renderLobbyGames);
+  socket.on('waiting_opponent', () => showWaiting(true));
+
+  // Partie démarre
+  socket.on('game_start', ({ white, black, bet, pot, timeControl }) => {
+    showWaiting(false);
+    gameStarted = true;
+    timers.w = timeControl; timers.b = timeControl;
+    const betEur = bet / 100;
+    const potEur = pot / 100;
+    const commEur = Math.round(potEur * COMM * 100) / 100;
+    const gainEur = potEur - commEur;
+
+    document.getElementById('game-title').textContent = `${white} ♔ vs ♚ ${black}`;
+    document.getElementById('game-sub').textContent   = `Mise : € ${betEur} — Pot : € ${potEur} — Commission : € ${commEur}`;
+    document.getElementById('pot-display').textContent = `€ ${potEur}`;
+    document.getElementById('gain-display').textContent= `€ ${gainEur}`;
+    document.getElementById('comm-display').textContent= `€ ${commEur}`;
+
+    const iAmWhite = myColor === 'w';
+    document.getElementById('pname-top').textContent = iAmWhite ? black : white;
+    document.getElementById('pname-bot').textContent = me.username;
+    document.getElementById('av-top').textContent = iAmWhite ? 'N' : 'B';
+    document.getElementById('av-bot').textContent = iAmWhite ? 'B' : 'N';
+    document.getElementById('av-top').className = 'avatar ' + (iAmWhite ? 'av-b' : 'av-w');
+    document.getElementById('av-bot').className = 'avatar ' + (iAmWhite ? 'av-w' : 'av-b');
+    document.getElementById('pbet-top').textContent = `Mise : € ${betEur}`;
+    document.getElementById('pbet-bot').textContent = `Mise : € ${betEur}`;
+    document.getElementById('timer-top-label').textContent = iAmWhite ? 'NOIRS' : 'BLANCS';
+    document.getElementById('timer-bot-label').textContent = iAmWhite ? 'BLANCS' : 'NOIRS';
+
+    updateTimerUI('w'); // blancs commencent
+    startLocalTimer();
+    setStatus(iAmWhite ? 'Tour des Blancs ♔ — À vous !' : 'Tour des Blancs ♔ — En attente...', '');
+  });
+
+  // Coup reçu
+  socket.on('move', ({ move, turn, timers: t }) => {
+    timers = t;
+    applyRemoteMove(move);
+    updateTimerUI(turn);
+    checkDrawAfterMove();
+  });
+
+  // Fin de partie
+  socket.on('game_over', ({ result, reason }) => {
+    stopLocalTimer();
+    gameActive = false;
+    // settled vient juste après
+  });
+
+  socket.on('settled', ({ result, reason, winnerGain, commission }) => {
+    stopLocalTimer();
+    const potEur  = (currentPot || 0) / 100;
+    const gainEur = winnerGain / 100;
+    const commEur = commission / 100;
+    const iWin = (result === 'white' && myColor === 'w') || (result === 'black' && myColor === 'b');
+    const isDraw = result === 'draw';
+
+    if (iWin) balance += winnerGain;
+    if (isDraw) balance += Math.round((currentPot/2) - commission/2);
+    updateBalanceUI();
+
+    document.getElementById('result-title').textContent = isDraw ? '½ NULLE' : iWin ? '♛ VICTOIRE !' : '♟ DÉFAITE';
+    document.getElementById('result-msg').textContent   = isDraw ? `Nulle — ${reason}` : iWin ? `Félicitations ! Vous avez gagné.` : `${result === 'white' ? 'Les Blancs' : 'Les Noirs'} gagnent (${reason}).`;
+    document.getElementById('r-pot').textContent  = `€ ${potEur}`;
+    document.getElementById('r-gain').textContent = isDraw ? `€ ${Math.round(potEur/2 - commEur/2)} (remboursement)` : `€ ${gainEur}`;
+    document.getElementById('r-comm').textContent = `€ ${commEur}`;
+    document.getElementById('result-overlay').classList.add('show');
+  });
+
+  // Nulle proposée par adversaire
+  socket.on('draw_offered', ({ from }) => {
+    document.getElementById('draw-banner').classList.add('show');
+  });
+
+  socket.on('color_assigned', (color) => {
+    if (color !== 'spectator') myColor = color;
+  });
+}
+
+// ============================================================
+//  LOBBY
+// ============================================================
+function renderLobbyGames(games) {
+  const tb = document.getElementById('lobby-tbody');
+  document.getElementById('stat-actives').textContent = games.length;
+
+  if (!games.length) {
+    tb.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted);">Aucune partie disponible — Crée la première !</td></tr>`;
+    return;
+  }
+  tb.innerHTML = games.map(g => {
+    const bet  = g.bet / 100;
+    const pot  = g.pot / 100;
+    const gain = pot - Math.round(pot * COMM * 100) / 100;
+    const mins = Math.floor(g.timeControl / 60);
+    return `<tr>
+      <td>${g.creator}</td>
+      <td class="muted-txt">${mins} min</td>
+      <td class="amt">€ ${bet}</td>
+      <td style="font-family:monospace;">€ ${pot}</td>
+      <td class="muted-txt">€ ${gain}</td>
+      <td><span class="badge badge-wait">EN ATTENTE</span></td>
+      <td><button class="btn btn-ghost btn-sm" onclick="joinGame('${g.id}',${g.bet})">REJOINDRE</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function updatePreview() {
+  const bet  = parseFloat(document.getElementById('create-bet').value) || 0;
+  const pot  = bet * 2;
+  const gain = (pot - pot * COMM).toFixed(2);
+  document.getElementById('preview-txt').innerHTML = `Pot : <b>€ ${pot.toFixed(2)}</b> — Gain net si victoire : <b>€ ${gain}</b>`;
+}
+
+async function createGame() {
+  const bet   = parseFloat(document.getElementById('create-bet').value) || 0;
+  const time  = parseInt(document.getElementById('create-time').value);
+  let   color = document.getElementById('create-color').value;
+  if (color === 'rand') color = Math.random() < .5 ? 'w' : 'b';
+
+  const betCents = Math.round(bet * 100);
+  if (betCents > balance) return openDepositModal();
+
+  // Débiter localement (le serveur débite aussi)
+  balance -= betCents; updateBalanceUI();
+
+  const gameId = crypto.randomUUID();
+  currentGameId  = gameId;
+  currentPot     = betCents * 2;
+  myColor        = color;
+  gameActive     = false;
+  waitingGame    = true;
+
+  initBoard();
+  showPage('game');
+  showWaiting(true);
+  setStatus('En attente d\'un adversaire...', '');
+
+  socket.emit('create_game', { gameId, bet: betCents, timeControl: time, color });
+}
+
+async function joinGame(gameId, bet) {
+  if (bet > balance) return openDepositModal();
+
+  currentGameId = gameId;
+  currentPot    = bet * 2;
+  waitingGame   = false;
+  gameActive    = false;
+
+  initBoard();
+  showPage('game');
+  showWaiting(false);
+
+  socket.emit('join_game', { gameId });
+}
+
+function cancelGame() {
+  if (currentGameId) socket.emit('resign', { gameId: currentGameId });
+  currentGameId = null; waitingGame = false;
+  showPage('lobby');
+}
+
+function leaveGame() {
+  if (gameActive || waitingGame) {
+    showConfirm('Quitter la partie ?', 'Compte comme un abandon.', () => {
+      if (currentGameId) socket.emit('resign', { gameId: currentGameId });
+      resetGame();
+      showPage('lobby');
+    });
+  } else { resetGame(); showPage('lobby'); }
+}
+
+function doResign() {
+  if (!gameActive) return;
+  showConfirm('Abandonner la partie ?', 'Tu perds ta mise.', () => {
+    socket.emit('resign', { gameId: currentGameId });
+  });
+}
+
+function offerDraw() {
+  if (!gameActive) return;
+  socket.emit('offer_draw', { gameId: currentGameId });
+  showToast('Nulle proposée à l\'adversaire');
+}
+
+function acceptDraw() {
+  document.getElementById('draw-banner').classList.remove('show');
+  socket.emit('accept_draw', { gameId: currentGameId });
+}
+
+function declineDraw() {
+  document.getElementById('draw-banner').classList.remove('show');
+  showToast('Nulle refusée');
+}
+
+function resetGame() {
+  gameActive = false; waitingGame = false;
+  currentGameId = null; myColor = null; gameStarted = false;
+  stopLocalTimer();
+}
+
+function closeResult() {
+  document.getElementById('result-overlay').classList.remove('show');
+  resetGame();
+  showPage('lobby');
+}
+
+function showWaiting(show) {
+  document.getElementById('waiting-overlay').style.display = show ? 'flex' : 'none';
+}
+
+// ============================================================
+//  TIMER UI
+// ============================================================
+function fmtTime(s) {
+  if (s <= 0) return '0:00';
+  const m = Math.floor(s / 60), sc = s % 60;
+  return `${m}:${sc < 10 ? '0' : ''}${sc}`;
+}
+
+let localTimerInterval = null;
+let lastTickTime = null;
+
+function startLocalTimer() {
+  stopLocalTimer();
+  lastTickTime = Date.now();
+  localTimerInterval = setInterval(() => {
+    if (!gameStarted) return;
+    const now = Date.now();
+    const elapsed = (now - lastTickTime) / 1000;
+    lastTickTime = now;
+    const activeTurn = currentTurn; // from chess engine
+    timers[activeTurn] = Math.max(0, timers[activeTurn] - elapsed);
+    document.getElementById(activeTurn === myColor ? 'timer-bot' : 'timer-top').textContent = fmtTime(Math.ceil(timers[activeTurn]));
+    // Low time warning
+    const box = activeTurn === myColor ? 'timer-bot-box' : 'timer-top-box';
+    document.getElementById(box).classList.toggle('low', timers[activeTurn] < 10);
+  }, 200);
+}
+
+function stopLocalTimer() {
+  if (localTimerInterval) { clearInterval(localTimerInterval); localTimerInterval = null; }
+}
+
+function updateTimerUI(activeTurn) {
+  const iAmTop = myColor !== activeTurn;
+  document.getElementById('timer-top-box').classList.toggle('my-turn', iAmTop);
+  document.getElementById('timer-bot-box').classList.toggle('my-turn', !iAmTop);
+  document.getElementById('timer-top').textContent = fmtTime(Math.ceil(timers[myColor === 'w' ? 'b' : 'w']));
+  document.getElementById('timer-bot').textContent = fmtTime(Math.ceil(timers[myColor]));
+  // Turn dots
+  const myIsActive = activeTurn === myColor;
+  document.getElementById('turn-top').className = 'turn-dot ' + (myIsActive ? 'off' : 'on');
+  document.getElementById('turn-bot').className = 'turn-dot ' + (myIsActive ? 'on'  : 'off');
+  // Status
+  if (gameActive) {
+    if (inCheck) {
+      const whoInCheck = currentTurn === 'w' ? 'Blancs' : 'Noirs';
+      setStatus(`⚠ ÉCHEC — ${whoInCheck} !`, 's-check');
+    } else {
+      const txt = activeTurn === myColor ? 'À votre tour ♟' : 'Tour de l\'adversaire...';
+      setStatus(txt, '');
+    }
+  }
+}
+
+function setStatus(msg, cls) {
+  const sb = document.getElementById('status-bar');
+  sb.textContent = msg;
+  sb.className = 'status-bar ' + (cls || '');
+}
+
+// ============================================================
+//  DÉPÔT
+// ============================================================
+async function doDeposit() {
+  const amount = parseFloat(document.getElementById('dep-amount').value);
+  if (!amount || amount < 5) return showToast('Minimum 5€');
+  const r = await api('/api/payments/deposit', 'POST', { amount });
+  if (r.error) return showToast(r.error);
+  window.location.href = r.url; // Redirige vers Stripe
+}
+
+async function doDepositModal() {
+  const amount = parseFloat(document.getElementById('dep-modal-amt').value);
+  if (!amount || amount < 5) return showToast('Minimum 5€');
+  const r = await api('/api/payments/deposit', 'POST', { amount });
+  if (r.error) return showToast(r.error);
+  window.location.href = r.url;
+}
+
+function quickDep(amount) {
+  balance += amount * 100; updateBalanceUI();
+  showToast(`✓ Simulation : +€${amount} ajoutés (mode test)`);
+}
+
+function openDepositModal() {
+  document.getElementById('dep-modal-bal').textContent = `€ ${(balance/100).toFixed(2)}`;
+  document.getElementById('deposit-overlay').classList.add('show');
+}
+function closeDepositModal() { document.getElementById('deposit-overlay').classList.remove('show'); }
+
+function updateBalanceUI() {
+  const eur = (balance / 100).toFixed(2);
+  document.getElementById('nav-balance').textContent = `€ ${eur}`;
+}
+
+// ============================================================
+//  ADMIN
+// ============================================================
+async function loadAdminStats() {
+  const r = await api('/api/payments/admin', 'GET');
+  if (r.total_commission !== undefined) {
+    document.getElementById('kpi-games').textContent = r.total_games || 0;
+    document.getElementById('kpi-vol').textContent   = `€ ${((r.total_volume||0)/100).toLocaleString()}`;
+    document.getElementById('kpi-comm').textContent  = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
+    document.getElementById('comm-total-val').textContent = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
+    document.getElementById('stat-volume').textContent    = `€ ${((r.total_volume||0)/100).toLocaleString()}`;
+    document.getElementById('stat-commission').textContent= `€ ${((r.total_commission||0)/100).toLocaleString()}`;
+  }
+}
+
+function doWithdraw() {
+  const iban = document.getElementById('iban-input').value.trim();
+  if (!iban) return showToast('Entre ton IBAN');
+  showToast('✓ Virement initié — 1 à 2 jours ouvrés');
+}
+
+// ============================================================
+//  NAV / PAGES
+// ============================================================
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  if (id === 'admin') loadAdminStats();
+  if (id === 'lobby') { updatePreview(); fetch('/api/lobby').then(r=>r.json()).then(renderLobbyGames); }
+}
+
+// ============================================================
+//  API HELPER
+// ============================================================
+async function api(url, method, body) {
+  try {
+    const r = await fetch(url, {
+      method: method || 'GET',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return await r.json();
+  } catch { return { error: 'Erreur réseau' }; }
+}
+
+// ============================================================
+//  CONFIRM MODAL
+// ============================================================
+let confirmCb = null;
+function showConfirm(title, msg, cb) {
+  confirmCb = cb;
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-msg').textContent   = msg;
+  document.getElementById('confirm-ok').onclick = () => { closeConfirm(); cb(); };
+  document.getElementById('confirm-overlay').classList.add('show');
+}
+function closeConfirm() { document.getElementById('confirm-overlay').classList.remove('show'); }
+
+// ============================================================
+//  TOAST
+// ============================================================
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// ============================================================
+//  CHESS ENGINE (complet avec roque, prise en passant, clouage, nulles)
+// ============================================================
+let G = [], sel = null, currentTurn = 'w', gameActive = false;
+let moveHistory = [], inCheck = false;
+let castleRights = {wK:true,wQ:true,bK:true,bQ:true};
+let enPassantSq = null, pendingPromo = null;
+let halfMoveClock = 0, positionHistory = [];
+let lastMove = null; // {fr,fc,tr,tc} pour highlight
+let currentPot = 0;
+
+const GLYPHS = {K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
+
+function isW(p){return p&&p===p.toUpperCase();}
+function colorOf(p){return isW(p)?'w':'b';}
+
+function initBoard(){
+  G=[['r','n','b','q','k','b','n','r'],['p','p','p','p','p','p','p','p'],
+     [null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null],
+     [null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null],
+     ['P','P','P','P','P','P','P','P'],['R','N','B','Q','K','B','N','R']];
+  sel=null; currentTurn='w'; moveHistory=[]; inCheck=false;
+  castleRights={wK:true,wQ:true,bK:true,bQ:true};
+  enPassantSq=null; pendingPromo=null; halfMoveClock=0; positionHistory=[]; lastMove=null;
+  renderBoard();
+}
+
+function cloneBoard(b){return b.map(r=>[...r]);}
+
+function pseudoMoves(board,r,c,epSq,cR){
+  const piece=board[r][c]; if(!piece)return[];
+  const p=piece.toLowerCase(),col=colorOf(piece),opp=col==='w'?'b':'w',ms=[];
+  const inB=(r,c)=>r>=0&&r<=7&&c>=0&&c<=7;
+  const free=(r,c)=>inB(r,c)&&!board[r][c];
+  const canLand=(r,c)=>inB(r,c)&&(!board[r][c]||colorOf(board[r][c])===opp);
+  if(p==='p'){
+    const d=col==='w'?-1:1,start=col==='w'?6:1;
+    if(free(r+d,c)){ms.push([r+d,c,'pawn']);if(r===start&&free(r+2*d,c))ms.push([r+2*d,c,'pawn2']);}
+    for(const dc of[-1,1]){
+      if(inB(r+d,c+dc)&&board[r+d]?.[c+dc]&&colorOf(board[r+d][c+dc])===opp)ms.push([r+d,c+dc,'cap']);
+      if(epSq&&epSq[0]===r+d&&epSq[1]===c+dc)ms.push([r+d,c+dc,'ep']);
+    }
+  }
+  if(p==='n'){for(const[dr,dc]of[[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]])if(canLand(r+dr,c+dc))ms.push([r+dr,c+dc,'n']);}
+  const slide=dirs=>{for(const[dr,dc]of dirs){let i=1;while(true){const nr=r+dr*i,nc=c+dc*i;if(!inB(nr,nc))break;if(board[nr][nc]){if(colorOf(board[nr][nc])===opp)ms.push([nr,nc,'cap']);break;}ms.push([nr,nc,'slide']);i++;}}};
+  if(p==='r'||p==='q')slide([[0,1],[0,-1],[1,0],[-1,0]]);
+  if(p==='b'||p==='q')slide([[1,1],[1,-1],[-1,1],[-1,-1]]);
+  if(p==='k'){
+    for(const[dr,dc]of[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]])if(canLand(r+dr,c+dc))ms.push([r+dr,c+dc,'k']);
+    if(cR){
+      const row=col==='w'?7:0;
+      if(r===row&&c===4){
+        const KS=col==='w'?cR.wK:cR.bK,QS=col==='w'?cR.wQ:cR.bQ,KP=col==='w'?'R':'r',QP=col==='w'?'R':'r';
+        if(KS&&!board[row][5]&&!board[row][6]&&board[row][7]===KP)ms.push([row,6,'ck']);
+        if(QS&&!board[row][3]&&!board[row][2]&&!board[row][1]&&board[row][0]===QP)ms.push([row,2,'cq']);
+      }
+    }
+  }
+  return ms;
+}
+
+function applyMove(board,fr,fc,tr,tc,flag,promo){
+  const b=cloneBoard(board),piece=b[fr][fc],col=colorOf(piece);
+  b[tr][tc]=piece; b[fr][fc]=null;
+  if(flag==='ep'){b[col==='w'?tr+1:tr-1][tc]=null;}
+  if(flag==='ck'){const row=col==='w'?7:0;b[row][5]=b[row][7];b[row][7]=null;}
+  if(flag==='cq'){const row=col==='w'?7:0;b[row][3]=b[row][0];b[row][0]=null;}
+  if(piece==='P'&&tr===0)b[tr][tc]=promo||'Q';
+  if(piece==='p'&&tr===7)b[tr][tc]=promo||'q';
+  return b;
+}
+
+function isAttacked(board,r,c,byCol){
+  for(let rr=0;rr<8;rr++)for(let cc=0;cc<8;cc++){
+    const p=board[rr][cc];
+    if(p&&colorOf(p)===byCol&&pseudoMoves(board,rr,cc,null,null).some(([mr,mc])=>mr===r&&mc===c))return true;
+  }
+  return false;
+}
+
+function isInCheck(board,col){
+  const k=col==='w'?'K':'k';
+  for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(board[r][c]===k)return isAttacked(board,r,c,col==='w'?'b':'w');
+  return true;
+}
+
+function legalMoves(r,c){
+  const piece=G[r][c]; if(!piece)return[];
+  const col=colorOf(piece);
+  return pseudoMoves(G,r,c,enPassantSq,castleRights).filter(([tr,tc,flag])=>{
+    if(flag==='ck'||flag==='cq'){
+      if(isInCheck(G,col))return false;
+      const row=col==='w'?7:0,opp=col==='w'?'b':'w';
+      const pass=flag==='ck'?[row,5]:[row,3];
+      if(isAttacked(G,pass[0],pass[1],opp)||isAttacked(G,tr,tc,opp))return false;
+    }
+    return !isInCheck(applyMove(G,r,c,tr,tc,flag),col);
+  });
+}
+
+function hasAnyLegal(col){
+  for(let r=0;r<8;r++)for(let c=0;c<8;c++)
+    if(G[r][c]&&colorOf(G[r][c])===col&&legalMoves(r,c).length)return true;
+  return false;
+}
+
+function kingPos(col){const k=col==='w'?'K':'k';for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(G[r][c]===k)return[r,c];return null;}
+
+function serializePos(){
+  let s='';for(let r=0;r<8;r++)for(let c=0;c<8;c++)s+=G[r][c]||'.';
+  s+=currentTurn+(castleRights.wK?'K':'')+(castleRights.wQ?'Q':'')+(castleRights.bK?'k':'')+(castleRights.bQ?'q':'');
+  s+=enPassantSq?`${enPassantSq[0]}${enPassantSq[1]}`:'--';
+  return s;
+}
+
+function insufficientMaterial(){
+  const ps=[];for(let r=0;r<8;r++)for(let c=0;c<8;c++){const p=G[r][c];if(p)ps.push(p.toLowerCase());}
+  if(ps.every(p=>p==='k'))return true;
+  const nk=ps.filter(p=>p!=='k');
+  if(nk.length===1&&(nk[0]==='n'||nk[0]==='b'))return true;
+  if(nk.length===2&&nk.every(p=>p==='b'))return true;
+  return false;
+}
+
+function checkDraw(){
+  if(halfMoveClock>=100)return 'Règle des 50 coups';
+  const pos=serializePos();
+  if(positionHistory.filter(p=>p===pos).length>=2)return 'Répétition triple';
+  if(insufficientMaterial())return 'Matériel insuffisant';
+  return null;
+}
+
+function pieceSVG(piece){
+  const isWhite=piece===piece.toUpperCase();
+  const fill=isWhite?'#ffffff':'#1a1a1a',stroke=isWhite?'#1a1a1a':'#ffffff',sw='1.5';
+  const p=piece.toLowerCase();
+  const shapes={
+    k:`<circle cx="24" cy="14" r="4" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <rect x="20" y="10" width="8" height="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <polygon points="12,40 36,40 32,20 16,20" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>
+       <rect x="10" y="38" width="28" height="4" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`,
+    q:`<circle cx="24" cy="10" r="4" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <circle cx="10" cy="14" r="3" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <circle cx="38" cy="14" r="3" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <polygon points="10,38 38,38 34,18 24,26 14,18" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>
+       <rect x="9" y="36" width="30" height="4" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`,
+    r:`<rect x="12" y="8" width="24" height="8" rx="1" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <rect x="14" y="8" width="4" height="5" fill="${stroke}"/>
+       <rect x="22" y="8" width="4" height="5" fill="${stroke}"/>
+       <rect x="30" y="8" width="4" height="5" fill="${stroke}"/>
+       <rect x="14" y="16" width="20" height="20" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <rect x="10" y="36" width="28" height="5" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`,
+    b:`<circle cx="24" cy="10" r="4" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <ellipse cx="24" cy="28" rx="10" ry="16" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <line x1="14" y1="28" x2="34" y2="28" stroke="${stroke}" stroke-width="${sw}"/>
+       <rect x="10" y="38" width="28" height="4" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`,
+    n:`<ellipse cx="24" cy="12" rx="10" ry="8" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <path d="M14,12 Q10,24 14,36 L34,36 Q32,24 28,18 Q22,22 14,12Z" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>
+       <circle cx="20" cy="10" r="2" fill="${stroke}"/>
+       <rect x="10" y="34" width="28" height="5" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`,
+    p:`<circle cx="24" cy="13" r="7" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>
+       <polygon points="16,38 32,38 29,22 19,22" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" stroke-linejoin="round"/>
+       <rect x="11" y="36" width="26" height="5" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`
+  };
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="52" height="52">${shapes[p]}</svg>`;
+}
+
+function renderBoard(){
+  const bd=document.getElementById('board'); if(!bd)return;
+  bd.innerHTML='';
+  const flip=myColor==='b';
+  const moves=sel?legalMoves(sel[0],sel[1]):[];
+  const mset=new Set(moves.map(([r,c])=>`${r},${c}`));
+  const kp=inCheck?kingPos(currentTurn):null;
+
+  for(let ri=0;ri<8;ri++){for(let ci=0;ci<8;ci++){
+    const r=flip?7-ri:ri,c=flip?7-ci:ci;
+    const sq=document.createElement('div');
+    sq.className=`sq ${(r+c)%2===0?'light':'dark'}`;
+    const piece=G[r][c];
+    if(piece)sq.innerHTML=pieceSVG(piece);
+    if(sel&&sel[0]===r&&sel[1]===c)sq.classList.add('selected');
+    if(mset.has(`${r},${c}`)){sq.classList.add('possible');if(piece)sq.classList.add('has-piece');}
+    if(kp&&kp[0]===r&&kp[1]===c)sq.classList.add('check-king');
+    if(lastMove&&((lastMove.fr===r&&lastMove.fc===c)||(lastMove.tr===r&&lastMove.tc===c)))sq.classList.add('last-move');
+    sq.addEventListener('click',()=>handleClick(r,c));
+    bd.appendChild(sq);
+  }}
+  // Coords
+  const ranks=document.getElementById('coord-rank');
+  const files=document.getElementById('coord-file');
+  if(ranks){ranks.innerHTML='';for(let i=0;i<8;i++){const s=document.createElement('span');s.textContent=flip?i+1:8-i;ranks.appendChild(s);}}
+  if(files){files.innerHTML='';for(let i=0;i<8;i++){const s=document.createElement('span');s.textContent=flip?'hgfedcba'[i]:'abcdefgh'[i];files.appendChild(s);}}
+}
+
+function handleClick(r,c){
+  if(!gameActive||pendingPromo||currentTurn!==myColor)return;
+  const piece=G[r][c];
+  if(sel){
+    const moves=legalMoves(sel[0],sel[1]);
+    const found=moves.find(([mr,mc])=>mr===r&&mc===c);
+    if(found){
+      const[,, flag]=found;
+      const movePiece=G[sel[0]][sel[1]];
+      if((movePiece==='P'&&r===0)||(movePiece==='p'&&r===7)){
+        pendingPromo={fr:sel[0],fc:sel[1],tr:r,tc:c,flag};
+        sel=null; renderBoard(); showPromoModal(colorOf(movePiece)); return;
+      }
+      commitMove(sel[0],sel[1],r,c,flag);
+      sel=null; return;
+    }
+  }
+  sel=(piece&&colorOf(piece)===currentTurn)?[r,c]:null;
+  renderBoard();
+}
+
+function showPromoModal(col){
+  const isW=col==='w';
+  document.getElementById('pi-q').textContent=isW?'♕':'♛';
+  document.getElementById('pi-r').textContent=isW?'♖':'♜';
+  document.getElementById('pi-b').textContent=isW?'♗':'♝';
+  document.getElementById('pi-n').textContent=isW?'♘':'♞';
+  document.getElementById('promo-overlay').classList.add('show');
+}
+
+function doPromo(wP,bP){
+  document.getElementById('promo-overlay').classList.remove('show');
+  if(!pendingPromo)return;
+  const{fr,fc,tr,tc,flag}=pendingPromo; pendingPromo=null;
+  const promo=myColor==='w'?wP:bP;
+  commitMove(fr,fc,tr,tc,flag,promo);
+}
+
+function commitMove(fr,fc,tr,tc,flag,promo){
+  const piece=G[fr][fc];
+  const isPawn=piece.toLowerCase()==='p';
+  const isCapture=!!(G[tr][tc]||(flag==='ep'));
+  if(isPawn||isCapture) halfMoveClock=0; else halfMoveClock++;
+
+  G=applyMove(G,fr,fc,tr,tc,flag,promo);
+  lastMove={fr,fc,tr,tc};
+
+  // En passant
+  enPassantSq=null;
+  if(isPawn&&Math.abs(tr-fr)===2)enPassantSq=[(fr+tr)/2,tc];
+
+  // Droits de roque
+  if(piece==='K'){castleRights.wK=false;castleRights.wQ=false;}
+  if(piece==='k'){castleRights.bK=false;castleRights.bQ=false;}
+  if(piece==='R'){if(fc===0)castleRights.wQ=false;if(fc===7)castleRights.wK=false;}
+  if(piece==='r'){if(fc===0)castleRights.bQ=false;if(fc===7)castleRights.bK=false;}
+  if(tr===7&&tc===0)castleRights.wQ=false; if(tr===7&&tc===7)castleRights.wK=false;
+  if(tr===0&&tc===0)castleRights.bQ=false; if(tr===0&&tc===7)castleRights.bK=false;
+
+  // Notation
+  const files='abcdefgh';
+  let notation='';
+  if(flag==='ck')notation='O-O';
+  else if(flag==='cq')notation='O-O-O';
+  else{
+    const pL=piece.toUpperCase()==='P'?'':piece.toUpperCase();
+    const cap=isCapture?'x':'';
+    notation=`${pL}${files[fc]}${8-fr}${cap}${files[tc]}${8-tr}`;
+    if(promo)notation+=`=${promo.toUpperCase()}`;
+  }
+  moveHistory.push({notation,turn:currentTurn});
+
+  // Changer de tour
+  currentTurn=currentTurn==='w'?'b':'w';
+  positionHistory.push(serializePos());
+  inCheck=isInCheck(G,currentTurn);
+
+  renderBoard();
+  renderMoves();
+
+  // Envoyer au serveur
+  const move={fr,fc,tr,tc,flag,promo,notation};
+  if(socket&&currentGameId)socket.emit('move',{gameId:currentGameId,move});
+
+  afterMove();
+}
+
+function applyRemoteMove({fr,fc,tr,tc,flag,promo}){
+  const piece=G[fr][fc];
+  if(!piece)return;
+  const isPawn=piece.toLowerCase()==='p';
+  const isCapture=!!(G[tr][tc]||(flag==='ep'));
+  if(isPawn||isCapture) halfMoveClock=0; else halfMoveClock++;
+  G=applyMove(G,fr,fc,tr,tc,flag,promo);
+  lastMove={fr,fc,tr,tc};
+  enPassantSq=null;
+  if(isPawn&&Math.abs(tr-fr)===2)enPassantSq=[(fr+tr)/2,tc];
+  if(piece==='K'){castleRights.wK=false;castleRights.wQ=false;}
+  if(piece==='k'){castleRights.bK=false;castleRights.bQ=false;}
+  currentTurn=currentTurn==='w'?'b':'w';
+  positionHistory.push(serializePos());
+  inCheck=isInCheck(G,currentTurn);
+  renderBoard();
+  renderMoves();
+}
+
+function checkDrawAfterMove(){
+  const dr=checkDraw();
+  if(dr){gameActive=false;stopLocalTimer();socket.emit('game_over',{gameId:currentGameId,result:'draw',reason:dr});}
+  else afterMove();
+}
+
+function afterMove(){
+  const noMoves=!hasAnyLegal(currentTurn);
+  if(noMoves){
+    gameActive=false; stopLocalTimer();
+    if(inCheck){
+      const winner=currentTurn==='w'?'black':'white';
+      setStatus(`♛ ÉCHEC ET MAT !`,'s-mate');
+      socket.emit('game_over',{gameId:currentGameId,result:winner,reason:'checkmate'});
+    } else {
+      setStatus('PAT — Nulle !','s-draw');
+      socket.emit('game_over',{gameId:currentGameId,result:'draw',reason:'pat'});
+    }
+    return;
+  }
+  const dr=checkDraw();
+  if(dr){
+    gameActive=false; stopLocalTimer();
+    setStatus(`½ Nulle — ${dr}`,'s-draw');
+    socket.emit('game_over',{gameId:currentGameId,result:'draw',reason:dr});
+    return;
+  }
+  if(inCheck){setStatus(`⚠ ÉCHEC !`,'s-check');}
+}
+
+function renderMoves(){
+  const ml=document.getElementById('moves-list'); if(!ml)return;
+  if(!moveHistory.length){ml.innerHTML='<span style="color:var(--muted);">La partie commence...</span>';return;}
+  let html='';
+  for(let i=0;i<moveHistory.length;i+=2){
+    const wm=moveHistory[i],bm=moveHistory[i+1];
+    html+=`<div class="move-pair"><span class="move-num">${Math.floor(i/2)+1}.</span><span class="move-txt">${wm.notation}</span>${bm?`<span class="move-txt">${bm.notation}</span>`:''}</div>`;
+  }
+  ml.innerHTML=html; ml.scrollTop=ml.scrollHeight;
+}
+</script>
+</body>
+</html>

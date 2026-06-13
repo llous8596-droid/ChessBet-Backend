@@ -1,8 +1,16 @@
 const { Pool } = require('pg');
 
+// Parse la DATABASE_URL pour forcer IPv4
+// Supabase donne parfois une adresse IPv6 qui ne marche pas sur Render free tier
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  // Force IPv4
+  family: 4,
+  // Paramètres de connexion robustes
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  max: 10,
 });
 
 async function initDB() {

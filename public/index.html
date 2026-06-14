@@ -206,7 +206,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
     <span class="nav-balance">Solde : <b id="nav-balance">€ 0</b></span>
     <button class="btn btn-green btn-sm" onclick="openDepositModal()">+ Dépôt</button>
     <button class="btn btn-ghost btn-sm" onclick="showPage('wallet')">💸 Retrait</button>
-    <button class="btn btn-ghost btn-sm" onclick="showPage('admin')">Admin</button>
+    <button class="btn btn-ghost btn-sm" id="nav-admin-btn" style="display:none;" onclick="showPage('admin')">Admin</button>
     <button class="btn btn-ghost btn-sm" onclick="logout()">Déco</button>
   </div>
 </nav>
@@ -641,10 +641,18 @@ const COMM = 0.05;
 // ============================================================
 //  INIT
 // ============================================================
-window.onload = () => {
+window.onload = async () => {
   if (token && me) {
     initSocket();
     showLoggedIn();
+    // Rafraîchir le statut admin depuis le serveur
+    const fresh = await api('/api/auth/me', 'GET');
+    if (fresh && !fresh.error) {
+      me.is_admin = fresh.is_admin;
+      me.balance  = fresh.balance;
+      localStorage.setItem('cb_user', JSON.stringify(me));
+      showLoggedIn();
+    }
     const savedGame = localStorage.getItem('cb_current_game');
     if (savedGame) {
       currentGameId = savedGame;
@@ -704,6 +712,7 @@ function saveSession(t, user) {
 function showLoggedIn() {
   document.getElementById('nav').style.display = 'flex';
   document.getElementById('nav-username').textContent = me.username;
+  document.getElementById('nav-admin-btn').style.display = me.is_admin ? '' : 'none';
   updateBalanceUI();
 }
 
@@ -1107,18 +1116,29 @@ function updateBalanceUI() {
 }
 
 // ============================================================
+//  STATS PUBLIQUES (lobby)
+// ============================================================
+async function loadPublicStats() {
+  const r = await api('/api/payments/stats', 'GET');
+  if (r.total_commission !== undefined) {
+    document.getElementById('stat-volume').textContent    = `€ ${((r.total_volume||0)/100).toLocaleString()}`;
+    document.getElementById('stat-commission').textContent= `€ ${((r.total_commission||0)/100).toLocaleString()}`;
+  }
+}
+
+// ============================================================
 //  ADMIN
 // ============================================================
 async function loadAdminStats() {
+  if (!me || !me.is_admin) return;
   const r = await api('/api/payments/admin', 'GET');
+  if (r.error) return;
   if (r.total_commission !== undefined) {
     document.getElementById('kpi-games').textContent = r.total_games || 0;
     document.getElementById('kpi-vol').textContent   = `€ ${((r.total_volume||0)/100).toLocaleString()}`;
     document.getElementById('kpi-comm').textContent  = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
     document.getElementById('kpi-users').textContent = r.total_users || 0;
     document.getElementById('comm-total-val').textContent = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
-    document.getElementById('stat-volume').textContent    = `€ ${((r.total_volume||0)/100).toLocaleString()}`;
-    document.getElementById('stat-commission').textContent= `€ ${((r.total_commission||0)/100).toLocaleString()}`;
 
     // Retraits joueurs en attente
     const pw = document.getElementById('pending-withdrawals');
@@ -1237,11 +1257,15 @@ async function rejectWithdrawal(id) {
 //  NAV / PAGES
 // ============================================================
 function showPage(id) {
+  if (id === 'admin' && (!me || !me.is_admin)) {
+    showToast('Accès réservé aux administrateurs');
+    id = 'lobby';
+  }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + id).classList.add('active');
   if (id === 'admin') loadAdminStats();
   if (id === 'wallet') loadWallet();
-  if (id === 'lobby') { updatePreview(); fetch('/api/lobby').then(r=>r.json()).then(renderLobbyGames); }
+  if (id === 'lobby') { updatePreview(); loadPublicStats(); fetch('/api/lobby').then(r=>r.json()).then(renderLobbyGames); }
 }
 
 // ============================================================

@@ -41,7 +41,7 @@ router.post('/login', async (req, res) => {
     const user = r.rows[0];
     if (!await bcrypt.compare(password, user.password))
       return res.status(401).json({ error: 'Identifiants incorrects' });
-    res.json({ token: makeToken(user), user: { id: user.id, username: user.username, balance: user.balance } });
+    res.json({ token: makeToken(user), user: { id: user.id, username: user.username, balance: user.balance, is_admin: user.is_admin } });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -50,7 +50,7 @@ router.post('/login', async (req, res) => {
 
 // Profil
 router.get('/me', auth, async (req, res) => {
-  const r = await pool.query('SELECT id,username,email,balance,created_at FROM users WHERE id=$1', [req.user.id]);
+  const r = await pool.query('SELECT id,username,email,balance,is_admin,created_at FROM users WHERE id=$1', [req.user.id]);
   res.json(r.rows[0]);
 });
 

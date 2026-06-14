@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { pool } = require('../db');
-const { auth } = require('../middleware/auth');
+const { auth, isAdmin } = require('../middleware/auth');
 
 // Créer une session de paiement Stripe
 router.post('/deposit', auth, async (req, res) => {
@@ -85,8 +85,14 @@ router.get('/history', auth, async (req, res) => {
   res.json(r.rows);
 });
 
+// Stats publiques pour le lobby (volume / commissions totales)
+router.get('/stats', async (req, res) => {
+  const r = await pool.query('SELECT total_commission, total_volume, total_games FROM admin_stats WHERE id=1');
+  res.json(r.rows[0]);
+});
+
 // Stats admin
-router.get('/admin', auth, async (req, res) => {
+router.get('/admin', auth, isAdmin, async (req, res) => {
   const r = await pool.query('SELECT * FROM admin_stats WHERE id=1');
   const u = await pool.query('SELECT COUNT(*) FROM users');
   const w = await pool.query("SELECT * FROM withdrawals WHERE status='pending' ORDER BY created_at DESC");
@@ -156,8 +162,7 @@ router.get('/withdrawals', auth, async (req, res) => {
 });
 
 // ── Admin : approuver un retrait ──────────────────────────────
-// En prod, sécurise cette route avec un rôle admin
-router.post('/withdraw/approve/:id', auth, async (req, res) => {
+router.post('/withdraw/approve/:id', auth, isAdmin, async (req, res) => {
   const id = parseInt(req.params.id);
   const client = await pool.connect();
   try {
@@ -180,7 +185,7 @@ router.post('/withdraw/approve/:id', auth, async (req, res) => {
 });
 
 // ── Admin : rejeter un retrait (rembourse le joueur) ──────────
-router.post('/withdraw/reject/:id', auth, async (req, res) => {
+router.post('/withdraw/reject/:id', auth, isAdmin, async (req, res) => {
   const id = parseInt(req.params.id);
   const client = await pool.connect();
   try {

@@ -24,6 +24,7 @@ async function initDB() {
       stripe_customer_id VARCHAR(255),
       iban       VARCHAR(50),
       iban_name  VARCHAR(100),
+      is_admin   BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS games (

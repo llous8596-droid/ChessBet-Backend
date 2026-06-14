@@ -70,6 +70,12 @@ async function initDB() {
     );
     INSERT INTO admin_stats(id) VALUES(1) ON CONFLICT DO NOTHING;
   `);
+
+  // Migration : ajouter la colonne is_admin si elle n'existe pas (table déjà créée avant cette mise à jour)
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
+  `);
+
   console.log('✅ Base de données prête');
 }
 

@@ -65,10 +65,42 @@ io.on('connection', (socket) => {
       timers: { w: timeControl, b: timeControl },
       lastTick: null,
       finished: false,
+      moveHistory: [],
     });
     socket.join(gameId);
     socket.emit('waiting_opponent');
     broadcastLobby();
+  });
+
+  // Reconnexion à une partie en cours (rechargement de page)
+  socket.on('reconnect_game', ({ gameId }) => {
+    const game = games.get(gameId);
+    if (!game || game.finished) return socket.emit('reconnect_failed');
+
+    const isWhite = game.players.white === uid;
+    const isBlack = game.players.black === uid;
+    if (!isWhite && !isBlack) return socket.emit('reconnect_failed');
+
+    socket.join(gameId);
+
+    // Recalculer le temps restant
+    let timers = { ...game.timers };
+    if (game.lastTick) {
+      const elapsed = Math.floor((Date.now() - game.lastTick) / 1000);
+      timers[game.turn] = Math.max(0, timers[game.turn] - elapsed);
+    }
+
+    socket.emit('reconnect_state', {
+      color: isWhite ? 'w' : 'b',
+      white: game.names.white,
+      black: game.names.black,
+      bet: game.bet,
+      pot: game.pot,
+      timeControl: game.timeControl,
+      turn: game.turn,
+      timers,
+      moveHistory: game.moveHistory,
+    });
   });
 
   // Rejoindre une partie existante
@@ -134,6 +166,7 @@ io.on('connection', (socket) => {
     }
     game.lastTick = now;
     game.turn = game.turn === 'w' ? 'b' : 'w';
+    game.moveHistory.push(move);
 
     io.to(gameId).emit('move', { move, turn: game.turn, timers: game.timers });
   });
@@ -145,6 +178,21 @@ io.on('connection', (socket) => {
     game.finished = true;
     clearGameTimer(gameId);
     settle(gameId, game, result, reason);
+  });
+
+  // Annuler une partie créée si aucun adversaire n'a rejoint
+  socket.on('cancel_game', ({ gameId }) => {
+    const game = games.get(gameId);
+    if (!game) return;
+    const isCreator = game.players.white === uid || game.players.black === uid;
+    if (!isCreator) return;
+    const hasOpponent = game.players.white && game.players.black;
+    if (hasOpponent) return; // partie déjà commencée, doit passer par resign
+
+    games.delete(gameId);
+    clearGameTimer(gameId);
+    socket.emit('game_cancelled', {});
+    broadcastLobby();
   });
 
   // Abandon

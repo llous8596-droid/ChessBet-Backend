@@ -38,7 +38,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
 .field input:focus,.field select:focus{outline:none;border-color:var(--gold);}
 
 /* ==================== AUTH PAGE ==================== */
-#page-auth{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem;}
+#page-auth.active{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem;}
 .auth-box{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:2.5rem;width:100%;max-width:380px;}
 .auth-box h1{color:var(--gold);font-size:1.8rem;letter-spacing:4px;text-align:center;margin-bottom:.3rem;}
 .auth-box p{text-align:center;color:var(--muted);font-size:13px;margin-bottom:2rem;}
@@ -645,7 +645,17 @@ window.onload = () => {
   if (token && me) {
     initSocket();
     showLoggedIn();
-    showPage('lobby');
+    const savedGame = localStorage.getItem('cb_current_game');
+    if (savedGame) {
+      currentGameId = savedGame;
+      initBoard();
+      showPage('game');
+      showWaiting(false);
+      setStatus('Reconnexion à la partie...', '');
+      socket.emit('reconnect_game', { gameId: savedGame });
+    } else {
+      showPage('lobby');
+    }
     loadAdminStats();
   } else {
     document.getElementById('page-auth').classList.add('active');
@@ -727,7 +737,10 @@ function initSocket() {
   socket.on('game_start', ({ white, black, bet, pot, timeControl }) => {
     showWaiting(false);
     gameStarted = true;
+    gameActive  = true;
+    waitingGame = false;
     timers.w = timeControl; timers.b = timeControl;
+    localStorage.setItem('cb_current_game', currentGameId);
     const betEur = bet / 100;
     const potEur = pot / 100;
     const commEur = Math.round(potEur * COMM * 100) / 100;
@@ -773,6 +786,7 @@ function initSocket() {
 
   socket.on('settled', ({ result, reason, winnerGain, commission }) => {
     stopLocalTimer();
+    localStorage.removeItem('cb_current_game');
     const potEur  = (currentPot || 0) / 100;
     const gainEur = winnerGain / 100;
     const commEur = commission / 100;
@@ -798,6 +812,59 @@ function initSocket() {
 
   socket.on('color_assigned', (color) => {
     if (color !== 'spectator') myColor = color;
+  });
+
+  // Reconnexion réussie après rechargement de page
+  socket.on('reconnect_state', ({ color, white, black, bet, pot, timeControl, turn, timers: t, moveHistory }) => {
+    myColor = color;
+    gameStarted = true;
+    gameActive  = true;
+    waitingGame = false;
+    timers = t;
+
+    const betEur = bet / 100;
+    const potEur = pot / 100;
+    const commEur = Math.round(potEur * COMM * 100) / 100;
+    const gainEur = potEur - commEur;
+    currentPot = pot;
+
+    document.getElementById('game-title').textContent = `${white} ♔ vs ♚ ${black}`;
+    document.getElementById('game-sub').textContent   = `Mise : € ${betEur} — Pot : € ${potEur} — Commission : € ${commEur}`;
+    document.getElementById('pot-display').textContent = `€ ${potEur}`;
+    document.getElementById('gain-display').textContent= `€ ${gainEur}`;
+    document.getElementById('comm-display').textContent= `€ ${commEur}`;
+
+    const iAmWhite = myColor === 'w';
+    document.getElementById('pname-top').textContent = iAmWhite ? black : white;
+    document.getElementById('pname-bot').textContent = me.username;
+    document.getElementById('av-top').textContent = iAmWhite ? 'N' : 'B';
+    document.getElementById('av-bot').textContent = iAmWhite ? 'B' : 'N';
+    document.getElementById('av-top').className = 'avatar ' + (iAmWhite ? 'av-b' : 'av-w');
+    document.getElementById('av-bot').className = 'avatar ' + (iAmWhite ? 'av-w' : 'av-b');
+    document.getElementById('pbet-top').textContent = `Mise : € ${betEur}`;
+    document.getElementById('pbet-bot').textContent = `Mise : € ${betEur}`;
+    document.getElementById('timer-top-label').textContent = iAmWhite ? 'NOIRS' : 'BLANCS';
+    document.getElementById('timer-bot-label').textContent = iAmWhite ? 'BLANCS' : 'NOIRS';
+
+    // Rejouer les coups depuis le début pour reconstruire le plateau
+    initBoard();
+    for (const move of moveHistory) {
+      applyRemoteMove(move);
+    }
+    currentTurn = turn;
+    inCheck = isInCheck(G, currentTurn);
+    renderBoard();
+    renderMoves();
+
+    updateTimerUI(turn);
+    startLocalTimer();
+  });
+
+  socket.on('reconnect_failed', () => {
+    localStorage.removeItem('cb_current_game');
+    resetGame();
+    showPage('lobby');
+    showToast('La partie n\'existe plus');
   });
 }
 
@@ -879,19 +946,29 @@ async function joinGame(gameId, bet) {
 }
 
 function cancelGame() {
-  if (currentGameId) socket.emit('resign', { gameId: currentGameId });
+  if (currentGameId) socket.emit('cancel_game', { gameId: currentGameId });
   currentGameId = null; waitingGame = false;
+  localStorage.removeItem('cb_current_game');
+  resetGame();
   showPage('lobby');
 }
 
 function leaveGame() {
-  if (gameActive || waitingGame) {
+  if (waitingGame && !gameActive) {
+    cancelGame();
+    return;
+  }
+  if (gameActive) {
     showConfirm('Quitter la partie ?', 'Compte comme un abandon.', () => {
       if (currentGameId) socket.emit('resign', { gameId: currentGameId });
+      localStorage.removeItem('cb_current_game');
       resetGame();
       showPage('lobby');
     });
-  } else { resetGame(); showPage('lobby'); }
+  } else {
+    localStorage.removeItem('cb_current_game');
+    resetGame(); showPage('lobby');
+  }
 }
 
 function doResign() {

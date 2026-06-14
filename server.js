@@ -51,11 +51,42 @@ io.on('connection', (socket) => {
   const uname = socket.user.username;
   console.log(`🔌 ${uname} connecté`);
 
-  // Créer une partie (la mise a déjà été débitée via REST)
-  socket.on('create_game', ({ gameId, bet, timeControl, color }) => {
+  // Créer une partie : débite immédiatement la mise du créateur
+  socket.on('create_game', async ({ gameId, bet, timeControl, color }) => {
+    const VALID_TIME_CONTROLS = [60, 180, 300, 600, 1800];
+    const MIN_BET_CENTS = 500;   // 5€
+    const MAX_BET_CENTS = 500000; // 5000€
+
+    if (!Number.isInteger(bet) || bet < MIN_BET_CENTS || bet > MAX_BET_CENTS)
+      return socket.emit('error', 'Mise invalide');
+    if (!VALID_TIME_CONTROLS.includes(timeControl))
+      return socket.emit('error', 'Cadence invalide');
+    if (color !== 'w' && color !== 'b')
+      return socket.emit('error', 'Couleur invalide');
+    if (games.has(gameId))
+      return socket.emit('error', 'Partie déjà existante');
+
+    // Débiter la mise du créateur (avec vérification atomique du solde)
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const r = await client.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [uid]);
+      if (!r.rows.length || r.rows[0].balance < bet) {
+        await client.query('ROLLBACK');
+        return socket.emit('error', 'Solde insuffisant');
+      }
+      await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [bet, uid]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error('Erreur débit créateur:', e);
+      return socket.emit('error', 'Erreur serveur');
+    } finally { client.release(); }
+
     const isWhite = color === 'w';
     games.set(gameId, {
       id: gameId,
+      creatorId: uid,
       players: { white: isWhite ? uid : null, black: isWhite ? null : uid },
       names:   { white: isWhite ? uname : null, black: isWhite ? null : uname },
       turn: 'w',
@@ -68,6 +99,7 @@ io.on('connection', (socket) => {
       moveHistory: [],
     });
     socket.join(gameId);
+    socket.emit('balance_update', { delta: -bet });
     socket.emit('waiting_opponent');
     broadcastLobby();
   });
@@ -110,31 +142,47 @@ io.on('connection', (socket) => {
 
     socket.join(gameId);
 
-    // Assigner la couleur manquante
+    // Assigner la couleur manquante (provisoirement, annulé si débit échoue)
+    let assignedColor;
     if (!game.players.white) {
-      game.players.white = uid;
-      game.names.white   = uname;
-      socket.emit('color_assigned', 'w');
+      assignedColor = 'w';
     } else if (!game.players.black) {
-      game.players.black = uid;
-      game.names.black   = uname;
-      socket.emit('color_assigned', 'b');
+      assignedColor = 'b';
     } else {
       socket.emit('color_assigned', 'spectator');
       return;
     }
 
-    // Débiter la mise du deuxième joueur
+    // Débiter la mise du deuxième joueur (avec vérification atomique du solde)
+    const client = await pool.connect();
     try {
-      await pool.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [game.bet, uid]);
-      await pool.query(
+      await client.query('BEGIN');
+      const r = await client.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [uid]);
+      if (!r.rows.length || r.rows[0].balance < game.bet) {
+        await client.query('ROLLBACK');
+        return socket.emit('error', 'Solde insuffisant');
+      }
+      await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [game.bet, uid]);
+      if (assignedColor === 'w') {
+        game.players.white = uid;
+        game.names.white   = uname;
+      } else {
+        game.players.black = uid;
+        game.names.black   = uname;
+      }
+      await client.query(
         `INSERT INTO games(id,white_id,black_id,bet,pot,time_control) VALUES($1,$2,$3,$4,$5,$6)`,
         [gameId, game.players.white, game.players.black, game.bet, game.pot, game.timeControl]
       );
+      await client.query('COMMIT');
     } catch(e) {
+      await client.query('ROLLBACK');
       console.error('Erreur débit joueur 2:', e);
-      return socket.emit('error', 'Solde insuffisant');
-    }
+      return socket.emit('error', 'Erreur serveur');
+    } finally { client.release(); }
+
+    socket.emit('color_assigned', assignedColor);
+    socket.emit('balance_update', { delta: -game.bet });
 
     // Démarrer la partie
     game.lastTick = Date.now();
@@ -181,7 +229,7 @@ io.on('connection', (socket) => {
   });
 
   // Annuler une partie créée si aucun adversaire n'a rejoint
-  socket.on('cancel_game', ({ gameId }) => {
+  socket.on('cancel_game', async ({ gameId }) => {
     const game = games.get(gameId);
     if (!game) return;
     const isCreator = game.players.white === uid || game.players.black === uid;
@@ -191,6 +239,15 @@ io.on('connection', (socket) => {
 
     games.delete(gameId);
     clearGameTimer(gameId);
+
+    // Remboursement de la mise du créateur
+    try {
+      await pool.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [game.bet, uid]);
+      socket.emit('balance_update', { delta: game.bet });
+    } catch (e) {
+      console.error('Erreur remboursement annulation:', e);
+    }
+
     socket.emit('game_cancelled', {});
     broadcastLobby();
   });
@@ -224,8 +281,23 @@ io.on('connection', (socket) => {
     settle(gameId, game, 'draw', 'accord mutuel');
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`🔌 ${uname} déconnecté`);
+    // Nettoyer les parties en attente créées par ce joueur (rembourser la mise)
+    for (const [gameId, game] of games.entries()) {
+      const hasOpponent = game.players.white && game.players.black;
+      const isCreator = game.creatorId === uid;
+      if (!hasOpponent && isCreator && !game.finished) {
+        games.delete(gameId);
+        clearGameTimer(gameId);
+        try {
+          await pool.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [game.bet, uid]);
+        } catch (e) {
+          console.error('Erreur remboursement déconnexion:', e);
+        }
+        broadcastLobby();
+      }
+    }
   });
 });
 

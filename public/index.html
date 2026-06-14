@@ -169,6 +169,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
 .payout-list{background:var(--bg3);border-radius:8px;padding:1rem;margin-bottom:1.5rem;text-align:left;}
 .payout-row{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;}
 .payout-win{color:var(--gold);font-family:monospace;font-weight:700;}
+.payout-win.loss{color:#e44;}
 .payout-comm{color:var(--muted);}
 
 /* Promo modal */
@@ -278,11 +279,11 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       <p class="preview-txt" id="dep-preview-txt"></p>
       <div class="quick-bets" style="margin-top:10px;">
         <span style="font-size:11px;color:var(--muted);align-self:center;">RAPIDE :</span>
-        <button class="qb" onclick="quickDep(20)">+€ 20</button>
-        <button class="qb" onclick="quickDep(50)">+€ 50</button>
-        <button class="qb" onclick="quickDep(100)">+€ 100</button>
-        <button class="qb" onclick="quickDep(250)">+€ 250</button>
-        <button class="qb" onclick="quickDep(500)">+€ 500</button>
+        <button class="qb" onclick="setDepAmount(20)">€ 20</button>
+        <button class="qb" onclick="setDepAmount(50)">€ 50</button>
+        <button class="qb" onclick="setDepAmount(100)">€ 100</button>
+        <button class="qb" onclick="setDepAmount(250)">€ 250</button>
+        <button class="qb" onclick="setDepAmount(500)">€ 500</button>
       </div>
     </div>
 
@@ -804,21 +805,35 @@ function initSocket() {
   socket.on('settled', ({ result, reason, winnerGain, commission }) => {
     stopLocalTimer();
     localStorage.removeItem('cb_current_game');
-    const potEur  = (currentPot || 0) / 100;
-    const gainEur = winnerGain / 100;
-    const commEur = commission / 100;
+    const pot = currentPot || 0; // en centimes
     const iWin = (result === 'white' && myColor === 'w') || (result === 'black' && myColor === 'b');
     const isDraw = result === 'draw';
+    const refundCents = Math.round((pot / 2) - (commission / 2));
 
     if (iWin) balance += winnerGain;
-    if (isDraw) balance += Math.round((currentPot/2) - commission/2);
+    if (isDraw) balance += refundCents;
     updateBalanceUI();
+
+    const eur = c => `€ ${(c / 100).toFixed(2)}`;
 
     document.getElementById('result-title').textContent = isDraw ? '½ NULLE' : iWin ? '♛ VICTOIRE !' : '♟ DÉFAITE';
     document.getElementById('result-msg').textContent   = isDraw ? `Nulle — ${reason}` : iWin ? `Félicitations ! Vous avez gagné.` : `${result === 'white' ? 'Les Blancs' : 'Les Noirs'} gagnent (${reason}).`;
-    document.getElementById('r-pot').textContent  = `€ ${potEur}`;
-    document.getElementById('r-gain').textContent = isDraw ? `€ ${Math.round(potEur/2 - commEur/2)} (remboursement)` : `€ ${gainEur}`;
-    document.getElementById('r-comm').textContent = `€ ${commEur}`;
+    document.getElementById('r-pot').textContent  = eur(pot);
+
+    const gainRow = document.querySelector('.payout-win');
+    const gainLabel = gainRow.querySelector('span:first-child');
+    gainRow.classList.toggle('loss', !isDraw && !iWin);
+    if (isDraw) {
+      gainLabel.textContent = 'Remboursement';
+      document.getElementById('r-gain').textContent = `${eur(refundCents)} (50% du pot − commission)`;
+    } else if (iWin) {
+      gainLabel.textContent = 'Votre gain';
+      document.getElementById('r-gain').textContent = eur(winnerGain);
+    } else {
+      gainLabel.textContent = 'Votre perte';
+      document.getElementById('r-gain').textContent = `− ${eur(pot / 2)}`;
+    }
+    document.getElementById('r-comm').textContent = isDraw || iWin ? eur(commission) : '—';
     document.getElementById('result-overlay').classList.add('show');
   });
 
@@ -829,6 +844,32 @@ function initSocket() {
 
   socket.on('color_assigned', (color) => {
     if (color !== 'spectator') myColor = color;
+  });
+
+  // Mise à jour du solde confirmée par le serveur (débit/remboursement)
+  socket.on('balance_update', ({ delta }) => {
+    balance += delta;
+    if (balance < 0) balance = 0;
+    updateBalanceUI();
+  });
+
+  // Erreur générale (mise invalide, solde insuffisant, partie introuvable...)
+  socket.on('error', (msg) => {
+    showToast(typeof msg === 'string' ? msg : 'Erreur');
+    if (!gameStarted) {
+      currentGameId = null; waitingGame = false;
+      localStorage.removeItem('cb_current_game');
+      resetGame();
+      showPage('lobby');
+    }
+  });
+
+  // Partie annulée (créateur a quitté avant qu'un adversaire ne rejoigne)
+  socket.on('game_cancelled', () => {
+    currentGameId = null; waitingGame = false;
+    localStorage.removeItem('cb_current_game');
+    resetGame();
+    showPage('lobby');
   });
 
   // Reconnexion réussie après rechargement de page
@@ -914,23 +955,26 @@ function renderLobbyGames(games) {
 }
 
 function updatePreview() {
-  const bet  = parseFloat(document.getElementById('create-bet').value) || 0;
+  let bet = parseFloat(document.getElementById('create-bet').value);
+  if (!Number.isFinite(bet) || bet < 5) bet = 5;
+  if (bet > 5000) bet = 5000;
+  bet = Math.round(bet * 100) / 100;
   const pot  = bet * 2;
   const gain = (pot - pot * COMM).toFixed(2);
   document.getElementById('preview-txt').innerHTML = `Pot : <b>€ ${pot.toFixed(2)}</b> — Gain net si victoire : <b>€ ${gain}</b>`;
 }
 
 async function createGame() {
-  const bet   = parseFloat(document.getElementById('create-bet').value) || 0;
+  const bet   = parseFloat(document.getElementById('create-bet').value);
   const time  = parseInt(document.getElementById('create-time').value);
   let   color = document.getElementById('create-color').value;
   if (color === 'rand') color = Math.random() < .5 ? 'w' : 'b';
 
+  if (!Number.isFinite(bet) || bet < 5)    return showToast('Mise minimum : € 5');
+  if (bet > 5000)                          return showToast('Mise maximum : € 5000');
+
   const betCents = Math.round(bet * 100);
   if (betCents > balance) return openDepositModal();
-
-  // Débiter localement (le serveur débite aussi)
-  balance -= betCents; updateBalanceUI();
 
   const gameId = crypto.randomUUID();
   currentGameId  = gameId;
@@ -1115,9 +1159,9 @@ async function doDepositModal() {
   window.location.href = r.url;
 }
 
-function quickDep(amount) {
-  balance += amount * 100; updateBalanceUI();
-  showToast(`✓ Simulation : +€${amount} ajoutés (mode test)`);
+function setDepAmount(amount) {
+  document.getElementById('dep-amount').value = amount;
+  updateDepositPreview();
 }
 
 function openDepositModal() {

@@ -88,7 +88,116 @@ router.get('/history', auth, async (req, res) => {
 // Stats admin
 router.get('/admin', auth, async (req, res) => {
   const r = await pool.query('SELECT * FROM admin_stats WHERE id=1');
-  res.json(r.rows[0]);
+  const u = await pool.query('SELECT COUNT(*) FROM users');
+  const w = await pool.query("SELECT * FROM withdrawals WHERE status='pending' ORDER BY created_at DESC");
+  res.json({ ...r.rows[0], total_users: parseInt(u.rows[0].count), pending_withdrawals: w.rows });
+});
+
+// ── Sauvegarder l'IBAN du joueur ─────────────────────────────
+router.post('/iban', auth, async (req, res) => {
+  const { iban, iban_name } = req.body;
+  if (!iban || !iban_name) return res.status(400).json({ error: 'IBAN et nom requis' });
+  // Validation basique IBAN
+  const clean = iban.replace(/\s/g, '').toUpperCase();
+  if (clean.length < 15 || clean.length > 34) return res.status(400).json({ error: 'IBAN invalide' });
+  await pool.query('UPDATE users SET iban=$1, iban_name=$2 WHERE id=$3', [clean, iban_name.trim(), req.user.id]);
+  res.json({ ok: true });
+});
+
+// ── Demander un retrait ───────────────────────────────────────
+router.post('/withdraw', auth, async (req, res) => {
+  const { amount } = req.body; // en euros
+  const cents = Math.round(parseFloat(amount) * 100);
+
+  if (!cents || cents < 1000) return res.status(400).json({ error: 'Retrait minimum : 10€' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Récupérer le solde et l'IBAN
+    const r = await client.query('SELECT balance, iban, iban_name FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+    const user = r.rows[0];
+
+    if (!user.iban) return res.status(400).json({ error: 'Aucun IBAN enregistré. Ajoute ton IBAN d\'abord.' });
+    if (user.balance < cents) return res.status(400).json({ error: 'Solde insuffisant' });
+
+    // Débiter le solde
+    await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [cents, req.user.id]);
+
+    // Créer la demande de retrait
+    const wr = await client.query(
+      'INSERT INTO withdrawals(user_id,amount,iban,iban_name,status) VALUES($1,$2,$3,$4,$5) RETURNING id',
+      [req.user.id, cents, user.iban, user.iban_name, 'pending']
+    );
+
+    // Enregistrer la transaction
+    await client.query(
+      'INSERT INTO transactions(user_id,type,amount,status,note) VALUES($1,$2,$3,$4,$5)',
+      [req.user.id, 'withdrawal', cents, 'pending', `Retrait #${wr.rows[0].id}`]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true, withdrawal_id: wr.rows[0].id, message: 'Retrait en cours de traitement (1-3 jours ouvrés)' });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error(e);
+    res.status(500).json({ error: 'Erreur serveur' });
+  } finally { client.release(); }
+});
+
+// ── Liste des retraits du joueur ──────────────────────────────
+router.get('/withdrawals', auth, async (req, res) => {
+  const r = await pool.query(
+    'SELECT id,amount,iban,status,created_at,processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20',
+    [req.user.id]
+  );
+  res.json(r.rows);
+});
+
+// ── Admin : approuver un retrait ──────────────────────────────
+// En prod, sécurise cette route avec un rôle admin
+router.post('/withdraw/approve/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      "UPDATE withdrawals SET status='approved', processed_at=NOW() WHERE id=$1",
+      [id]
+    );
+    await client.query(
+      "UPDATE transactions SET status='completed' WHERE note=$1",
+      [`Retrait #${id}`]
+    );
+    await client.query('UPDATE admin_stats SET total_withdrawn=total_withdrawn+(SELECT amount FROM withdrawals WHERE id=$1) WHERE id=1',[id]);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch(e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'Erreur' });
+  } finally { client.release(); }
+});
+
+// ── Admin : rejeter un retrait (rembourse le joueur) ──────────
+router.post('/withdraw/reject/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT user_id,amount FROM withdrawals WHERE id=$1', [id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Introuvable' });
+    const { user_id, amount } = r.rows[0];
+    // Rembourser
+    await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amount, user_id]);
+    await client.query("UPDATE withdrawals SET status='rejected', processed_at=NOW() WHERE id=$1", [id]);
+    await client.query("UPDATE transactions SET status='rejected' WHERE note=$1", [`Retrait #${id}`]);
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch(e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'Erreur' });
+  } finally { client.release(); }
 });
 
 module.exports = router;

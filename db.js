@@ -22,6 +22,8 @@ async function initDB() {
       password   VARCHAR(255) NOT NULL,
       balance    INTEGER DEFAULT 0,
       stripe_customer_id VARCHAR(255),
+      iban       VARCHAR(50),
+      iban_name  VARCHAR(100),
       created_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS games (
@@ -45,13 +47,25 @@ async function initDB() {
       amount     INTEGER NOT NULL,
       stripe_id  VARCHAR(255),
       status     VARCHAR(20) DEFAULT 'pending',
+      note       VARCHAR(255),
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS withdrawals (
+      id         SERIAL PRIMARY KEY,
+      user_id    INTEGER REFERENCES users(id),
+      amount     INTEGER NOT NULL,
+      iban       VARCHAR(50) NOT NULL,
+      iban_name  VARCHAR(100) NOT NULL,
+      status     VARCHAR(20) DEFAULT 'pending',
+      processed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS admin_stats (
       id               INTEGER PRIMARY KEY DEFAULT 1,
       total_commission INTEGER DEFAULT 0,
       total_volume     INTEGER DEFAULT 0,
-      total_games      INTEGER DEFAULT 0
+      total_games      INTEGER DEFAULT 0,
+      total_withdrawn  INTEGER DEFAULT 0
     );
     INSERT INTO admin_stats(id) VALUES(1) ON CONFLICT DO NOTHING;
   `);

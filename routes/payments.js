@@ -3,13 +3,28 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { pool } = require('../db');
 const { auth, isAdmin } = require('../middleware/auth');
 
+// ── Frais de traitement répercutés sur le joueur lors d'un dépôt ──
+// Couvre approximativement les frais Stripe (≈1.5% + 0.25€ pour les cartes EU).
+// Le joueur est crédité du montant qu'il choisit ; le montant facturé est légèrement supérieur.
+const DEPOSIT_FEE_PERCENT = parseFloat(process.env.DEPOSIT_FEE_PERCENT || '1.5'); // en %
+const DEPOSIT_FEE_FIXED_CENTS = parseInt(process.env.DEPOSIT_FEE_FIXED_CENTS || '25'); // en centimes
+
+function depositChargeCents(creditCents) {
+  // montant_facturé = (montant_crédité + frais_fixe) / (1 - frais_pourcentage)
+  const charge = (creditCents + DEPOSIT_FEE_FIXED_CENTS) / (1 - DEPOSIT_FEE_PERCENT / 100);
+  return Math.ceil(charge);
+}
+
 // Créer une session de paiement Stripe
 router.post('/deposit', auth, async (req, res) => {
   const amount = parseFloat(req.body.amount);
   if (!amount || amount < 5)  return res.status(400).json({ error: 'Minimum 5€' });
   if (amount > 5000)           return res.status(400).json({ error: 'Maximum 5000€' });
 
-  const cents = Math.round(amount * 100);
+  const creditCents = Math.round(amount * 100);
+  const chargeCents = depositChargeCents(creditCents);
+  const feeCents    = chargeCents - creditCents;
+
   try {
     const r = await pool.query('SELECT stripe_customer_id,email,username FROM users WHERE id=$1', [req.user.id]);
     const user = r.rows[0];
@@ -23,19 +38,22 @@ router.post('/deposit', auth, async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       customer: cid,
       payment_method_types: ['card'],
-      line_items: [{ price_data: { currency: 'eur', product_data: { name: `Dépôt ChessBet` }, unit_amount: cents }, quantity: 1 }],
+      line_items: [
+        { price_data: { currency: 'eur', product_data: { name: `Dépôt ChessBet` }, unit_amount: creditCents }, quantity: 1 },
+        { price_data: { currency: 'eur', product_data: { name: `Frais de traitement` }, unit_amount: feeCents }, quantity: 1 },
+      ],
       mode: 'payment',
       success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/deposit-success`,
       cancel_url:  `${process.env.FRONTEND_URL || 'http://localhost:3000'}/`,
-      metadata: { user_id: String(req.user.id), amount_cents: String(cents) },
+      metadata: { user_id: String(req.user.id), amount_cents: String(creditCents), fee_cents: String(feeCents) },
     });
 
     await pool.query(
       'INSERT INTO transactions(user_id,type,amount,stripe_id,status) VALUES($1,$2,$3,$4,$5)',
-      [req.user.id, 'deposit', cents, session.id, 'pending']
+      [req.user.id, 'deposit', creditCents, session.id, 'pending']
     );
 
-    res.json({ url: session.url });
+    res.json({ url: session.url, creditAmount: creditCents / 100, chargeAmount: chargeCents / 100, feeAmount: feeCents / 100 });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Erreur Stripe' });

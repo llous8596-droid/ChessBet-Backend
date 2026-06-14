@@ -261,7 +261,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       <div class="deposit-row">
         <div class="field" style="margin:0;flex:1;">
           <label>MONTANT (€)</label>
-          <input type="number" id="dep-amount" value="50" min="5" step="5">
+          <input type="number" id="dep-amount" value="50" min="5" step="5" oninput="updateDepositPreview()">
         </div>
         <div class="field" style="margin:0;flex:1;">
           <label>MÉTHODE</label>
@@ -275,6 +275,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
           <button class="btn btn-green" onclick="doDeposit()">DÉPOSER →</button>
         </div>
       </div>
+      <p class="preview-txt" id="dep-preview-txt"></p>
       <div class="quick-bets" style="margin-top:10px;">
         <span style="font-size:11px;color:var(--muted);align-self:center;">RAPIDE :</span>
         <button class="qb" onclick="quickDep(20)">+€ 20</button>
@@ -637,6 +638,13 @@ let timers = { w: 300, b: 300 };
 let myTurn = false;
 
 const COMM = 0.05;
+const DEP_FEE_PCT   = 1.5;   // doit correspondre à DEPOSIT_FEE_PERCENT côté serveur
+const DEP_FEE_FIXED = 0.25;  // doit correspondre à DEPOSIT_FEE_FIXED_CENTS/100 côté serveur
+
+function depositChargeAmount(creditAmount) {
+  const charge = (creditAmount + DEP_FEE_FIXED) / (1 - DEP_FEE_PCT / 100);
+  return Math.ceil(charge * 100) / 100;
+}
 
 // ============================================================
 //  INIT
@@ -1083,6 +1091,14 @@ function setStatus(msg, cls) {
 // ============================================================
 //  DÉPÔT
 // ============================================================
+function updateDepositPreview() {
+  const amount = parseFloat(document.getElementById('dep-amount').value) || 0;
+  const charge = depositChargeAmount(amount);
+  const fee    = (charge - amount).toFixed(2);
+  document.getElementById('dep-preview-txt').innerHTML =
+    amount > 0 ? `Tu seras crédité de <b>€ ${amount.toFixed(2)}</b> — Montant facturé : <b>€ ${charge.toFixed(2)}</b> (frais de traitement : € ${fee})` : '';
+}
+
 async function doDeposit() {
   const amount = parseFloat(document.getElementById('dep-amount').value);
   if (!amount || amount < 5) return showToast('Minimum 5€');
@@ -1265,7 +1281,7 @@ function showPage(id) {
   document.getElementById('page-' + id).classList.add('active');
   if (id === 'admin') loadAdminStats();
   if (id === 'wallet') loadWallet();
-  if (id === 'lobby') { updatePreview(); loadPublicStats(); fetch('/api/lobby').then(r=>r.json()).then(renderLobbyGames); }
+  if (id === 'lobby') { updatePreview(); updateDepositPreview(); loadPublicStats(); fetch('/api/lobby').then(r=>r.json()).then(renderLobbyGames); }
 }
 
 // ============================================================

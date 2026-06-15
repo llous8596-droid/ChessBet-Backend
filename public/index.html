@@ -1083,7 +1083,6 @@ function stopSearching(){
   if(sb)sb.style.display='none';
   if(fb){fb.disabled=false;fb.textContent='🔍 CHERCHER UNE PARTIE';}
 }
-}
 function initMatchmakingListeners(){
   socket.on('match_cancelled',()=>{stopSearching();showToast('Recherche annulee');});
   socket.on('match_error',(msg)=>{stopSearching();showToast('\u274c '+msg);});

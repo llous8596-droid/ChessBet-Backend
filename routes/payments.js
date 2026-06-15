@@ -55,8 +55,8 @@ router.post('/deposit', auth, async (req, res) => {
 
     res.json({ url: session.url, creditAmount: creditCents / 100, chargeAmount: chargeCents / 100, feeAmount: feeCents / 100 });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Erreur Stripe' });
+    console.error('Erreur dépôt:', e);
+    res.status(500).json({ error: e.message || 'Erreur Stripe' });
   }
 });
 
@@ -227,7 +227,14 @@ router.get('/connect/status', auth, async (req, res) => {
     if (payoutsEnabled !== user.payouts_enabled) {
       await pool.query('UPDATE users SET payouts_enabled=$1 WHERE id=$2', [payoutsEnabled, req.user.id]);
     }
-    res.json({ configured: true, payouts_enabled: payoutsEnabled });
+    res.json({
+      configured: true,
+      payouts_enabled: payoutsEnabled,
+      details_submitted: !!account.details_submitted,
+      currently_due: account.requirements?.currently_due || [],
+      pending_verification: account.requirements?.pending_verification || [],
+      disabled_reason: account.requirements?.disabled_reason || null,
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Erreur Stripe' });

@@ -1252,6 +1252,7 @@ async function refreshConnectStatus() {
 
   okEl.style.display = 'none';
   pendingEl.style.display = 'none';
+  pendingEl.innerHTML = '⚠️ Configuration incomplète. Termine la configuration pour pouvoir retirer.';
 
   if (r.payouts_enabled) {
     okEl.style.display = 'block';
@@ -1263,6 +1264,22 @@ async function refreshConnectStatus() {
     onboardBtn.textContent = r.configured ? 'TERMINER LA CONFIGURATION →' : 'CONFIGURER MES INFOS DE PAIEMENT →';
     withdrawBtn.disabled = true;
     withdrawBtn.style.opacity = '.5';
+
+    let detail = '';
+    if (r.currently_due?.length) {
+      detail += `Informations manquantes : ${r.currently_due.join(', ')}. `;
+    }
+    if (r.pending_verification?.length) {
+      detail += `En cours de vérification par Stripe : ${r.pending_verification.join(', ')}. Ça peut prendre quelques heures.`;
+    }
+    if (r.disabled_reason) {
+      detail += ` (Raison : ${r.disabled_reason})`;
+    }
+    if (detail) {
+      pendingEl.innerHTML = `⚠️ Configuration incomplète. ${detail}`;
+    } else if (r.details_submitted) {
+      pendingEl.innerHTML = `⚠️ Formulaire envoyé, en attente de validation par Stripe. Réessaie dans quelques minutes.`;
+    }
   }
 }
 

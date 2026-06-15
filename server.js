@@ -169,7 +169,7 @@ io.on('connection', (socket) => {
         await client.query('BEGIN');
 
         const w = await client.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [whiteId]);
-        const b = await client.query('SELECT balance FROM users WHERE id=$2 FOR UPDATE', [blackId]);
+        const b = await client.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [blackId]);
         if (w.rows[0].balance < bet || b.rows[0].balance < bet) {
           await client.query('ROLLBACK');
           // Remettre l'adversaire en file si c'est lui qui n'a plus de solde

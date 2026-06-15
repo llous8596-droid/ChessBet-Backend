@@ -270,6 +270,8 @@ io.on('connection', (socket) => {
     socket.emit('match_cancelled');
     broadcastQueueCounts();
   });
+
+  socket.on('join_game', async ({ gameId }) => {
     const game = games.get(gameId);
     if (!game || game.finished) return socket.emit('error', 'Partie introuvable');
 
@@ -532,10 +534,6 @@ function broadcastLobby() {
   }
   io.emit('lobby_update', lobby);
   broadcastQueueCounts();
-}
-    }
-  }
-  io.emit('lobby_update', lobby);
 }
 
 // Route REST pour le lobby (pour le chargement initial)

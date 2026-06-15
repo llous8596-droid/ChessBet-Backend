@@ -145,6 +145,9 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
 .waiting-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.7);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:4px;z-index:10;}
 .waiting-overlay p{color:var(--gold);font-size:1rem;letter-spacing:2px;margin-bottom:1rem;}
 .spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin 1s linear infinite;}
+.match-opt{padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text);transition:all .18s;font-family:"Georgia",serif;}
+.match-opt:hover{border-color:var(--gold);color:var(--gold);}
+.match-opt.active{background:rgba(212,160,23,0.15);border-color:var(--gold);color:var(--gold);font-weight:700;}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* ==================== ADMIN PAGE ==================== */
@@ -287,48 +290,61 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       </div>
     </div>
 
-    <!-- Créer partie -->
-    <div class="card">
-      <h2>CRÉER UNE PARTIE</h2>
-      <div class="create-row">
-        <div class="field" style="margin:0;">
-          <label>MISE (€)</label>
-          <input type="number" id="create-bet" value="10" min="5" step="5" oninput="updatePreview()">
-        </div>
-        <div class="field" style="margin:0;">
-          <label>CADENCE</label>
-          <select id="create-time" onchange="updatePreview()">
-            <option value="60">Bullet 1+0</option>
-            <option value="180">Blitz 3+0</option>
-            <option value="300" selected>Blitz 5+0</option>
-            <option value="600">Rapide 10+0</option>
-            <option value="1800">Classique 30+0</option>
-          </select>
-        </div>
-        <div class="field" style="margin:0;">
-          <label>COULEUR</label>
-          <select id="create-color">
-            <option value="rand">Aléatoire ♟</option>
-            <option value="w">Blancs ♔</option>
-            <option value="b">Noirs ♚</option>
-          </select>
-        </div>
-        <div style="padding-bottom:0;">
-          <button class="btn btn-gold" onclick="createGame()">CRÉER →</button>
+    <!-- MATCHMAKING -->
+    <div class="card" style="margin-bottom:1.2rem;">
+      <h2>TROUVER UNE PARTIE</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.2rem;">Choisis ta mise et ta cadence — on te trouve un adversaire automatiquement.</p>
+
+      <div style="margin-bottom:1rem;">
+        <label style="font-size:11px;color:var(--muted);letter-spacing:1px;display:block;margin-bottom:.5rem;">MISE</label>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+          <button class="match-opt bet-opt active" data-bet="500"   onclick="selectBet(this,500)">€ 5</button>
+          <button class="match-opt bet-opt"        data-bet="1000"  onclick="selectBet(this,1000)">€ 10</button>
+          <button class="match-opt bet-opt"        data-bet="5000"  onclick="selectBet(this,5000)">€ 50</button>
+          <button class="match-opt bet-opt"        data-bet="10000" onclick="selectBet(this,10000)">€ 100</button>
         </div>
       </div>
-      <p class="preview-txt" id="preview-txt">Pot : <b>€ 20</b> — Gain net si victoire : <b>€ 19</b></p>
+
+      <div style="margin-bottom:1.2rem;">
+        <label style="font-size:11px;color:var(--muted);letter-spacing:1px;display:block;margin-bottom:.5rem;">CADENCE</label>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+          <button class="match-opt tc-opt"           data-tc="60"   onclick="selectTC(this,60)">⚡ Bullet 1+0</button>
+          <button class="match-opt tc-opt"           data-tc="180"  onclick="selectTC(this,180)">🔥 Blitz 3+0</button>
+          <button class="match-opt tc-opt active"    data-tc="300"  onclick="selectTC(this,300)">⚡ Blitz 5+0</button>
+          <button class="match-opt tc-opt"           data-tc="600"  onclick="selectTC(this,600)">🎯 Rapide 10+0</button>
+          <button class="match-opt tc-opt"           data-tc="1800" onclick="selectTC(this,1800)">♟ Classique 30+0</button>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+        <div>
+          <div style="font-size:13px;color:var(--muted);">Pot total : <b id="mm-pot" style="color:var(--gold)">€ 10</b> — Gain net : <b id="mm-gain" style="color:var(--gold)">€ 9.50</b></div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">Joueurs en attente : <span id="mm-queue-count" style="color:var(--gold)">0</span></div>
+        </div>
+        <button class="btn btn-gold" id="find-btn" onclick="findMatch()" style="min-width:160px;">🔍 CHERCHER UNE PARTIE</button>
+      </div>
+
+      <div id="searching-box" style="display:none;margin-top:1rem;background:var(--bg3);border-radius:6px;padding:1rem;text-align:center;">
+        <div style="font-size:13px;color:var(--gold);margin-bottom:.6rem;">🔍 Recherche en cours — <span id="search-bet-label">€ 5</span> · <span id="search-tc-label">Blitz 5+0</span></div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:1rem;">
+          <div class="spinner"></div>
+          <span style="font-size:12px;color:var(--muted);" id="search-timer-txt">0s</span>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:.8rem;" onclick="cancelMatch()">Annuler</button>
+      </div>
     </div>
 
-    <!-- Tableau parties disponibles -->
     <div class="card" style="padding:0;overflow:hidden;">
+      <div style="padding:1rem 1.2rem;border-bottom:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <h2 style="margin:0;font-size:12px;color:var(--gold);letter-spacing:2px;">PARTIES EN ATTENTE</h2>
+        <button class="btn btn-ghost btn-sm" onclick="createGame()">+ Créer une partie</button>
+      </div>
       <table class="tbl" style="width:100%;">
         <thead><tr>
-          <th style="padding:12px;">JOUEUR</th>
-          <th>CADENCE</th><th>MISE</th><th>POT</th><th>GAIN NET</th><th>STATUT</th><th></th>
+          <th style="padding:10px;">JOUEUR</th><th>CADENCE</th><th>MISE</th><th>POT</th><th>GAIN NET</th><th></th>
         </tr></thead>
         <tbody id="lobby-tbody">
-          <tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted);">Aucune partie disponible</td></tr>
+          <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted);">Aucune partie en attente</td></tr>
         </tbody>
       </table>
     </div>
@@ -734,8 +750,14 @@ function logout() {
 function initSocket() {
   socket = io({ auth: { token } });
 
-  socket.on('connect', () => console.log('✅ Socket connecté'));
+  socket.on('connect', () => {
+    console.log('✅ Socket connecté');
+    updateMMPreview();
+  });
   socket.on('connect_error', e => console.error('Socket erreur:', e.message));
+
+  // Matchmaking
+  initMatchmakingListeners();
 
   // Lobby en temps réel
   socket.on('lobby_update', renderLobbyGames);
@@ -833,7 +855,10 @@ function initSocket() {
   });
 
   socket.on('color_assigned', (color) => {
-    if (color !== 'spectator') myColor = color;
+    if (color !== 'spectator') {
+      myColor = color;
+      if (searching) stopSearching(); // match trouvé via matchmaking
+    }
   });
 
   // Mise à jour du solde confirmée par le serveur (débit/remboursement)
@@ -952,6 +977,69 @@ function updatePreview() {
   const pot  = bet * 2;
   const gain = (pot - pot * COMM).toFixed(2);
   document.getElementById('preview-txt').innerHTML = `Pot : <b>€ ${pot.toFixed(2)}</b> — Gain net si victoire : <b>€ ${gain}</b>`;
+}
+
+// ============================================================
+//  MATCHMAKING
+// ============================================================
+let selectedBet = 500;
+let selectedTC  = 300;
+let searching   = false;
+let searchTimer = null;
+let searchSecs  = 0;
+const TC_NAMES = {60:'Bullet 1+0',180:'Blitz 3+0',300:'Blitz 5+0',600:'Rapide 10+0',1800:'Classique 30+0'};
+
+function selectBet(el,val){
+  document.querySelectorAll('.bet-opt').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active'); selectedBet=val; updateMMPreview();
+}
+function selectTC(el,val){
+  document.querySelectorAll('.tc-opt').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active'); selectedTC=val; updateMMPreview();
+}
+function updateMMPreview(){
+  const pot=(selectedBet*2/100).toFixed(2);
+  const gain=(selectedBet*2/100*0.95).toFixed(2);
+  const pe=document.getElementById('mm-pot'); if(pe)pe.textContent='\u20ac '+pot;
+  const ge=document.getElementById('mm-gain'); if(ge)ge.textContent='\u20ac '+gain;
+}
+function findMatch(){
+  if(searching)return;
+  if(selectedBet>balance)return openDepositModal();
+  searching=true; searchSecs=0;
+  document.getElementById('searching-box').style.display='';
+  const fb=document.getElementById('find-btn');
+  fb.disabled=true; fb.textContent='\u23f3 Recherche...';
+  document.getElementById('search-bet-label').textContent='\u20ac '+selectedBet/100;
+  document.getElementById('search-tc-label').textContent=TC_NAMES[selectedTC]||'';
+  searchTimer=setInterval(()=>{
+    searchSecs++;
+    const el=document.getElementById('search-timer-txt');
+    if(el)el.textContent=searchSecs+'s';
+  },1000);
+  socket.emit('find_match',{bet:selectedBet,timeControl:selectedTC});
+}
+function cancelMatch(){
+  socket.emit('cancel_match');
+  stopSearching();
+}
+function stopSearching(){
+  searching=false; clearInterval(searchTimer); searchTimer=null;
+  const sb=document.getElementById('searching-box');
+  const fb=document.getElementById('find-btn');
+  if(sb)sb.style.display='none';
+  if(fb){fb.disabled=false;fb.textContent='\U0001f50d CHERCHER UNE PARTIE';}
+}
+function initMatchmakingListeners(){
+  socket.on('match_cancelled',()=>{stopSearching();showToast('Recherche annulee');});
+  socket.on('match_error',(msg)=>{stopSearching();showToast('\u274c '+msg);});
+  socket.on('queue_counts',(counts)=>{
+    const key=selectedTC+'_'+selectedBet;
+    const count=counts[key]||0;
+    const el=document.getElementById('mm-queue-count');
+    if(el)el.textContent=count;
+  });
+  // color_assigned gere dans initSocket
 }
 
 async function createGame() {

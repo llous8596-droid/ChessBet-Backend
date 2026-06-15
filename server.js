@@ -27,8 +27,13 @@ app.use('/api/auth',     require('./routes/auth'));
 app.use('/api/payments', require('./routes/payments'));
 
 // ── Parties en mémoire ──────────────────────────────────────
-// gameId → { id, players:{white,black}, turn, bet, pot, timeControl, timers, finished }
 const games = new Map();
+
+// ── File de matchmaking ─────────────────────────────────────
+// Structure : matchQueue[timeControl][betCents] = { socketId, uid, uname, color }
+// Quand un joueur cherche une partie, on vérifie si quelqu'un attend déjà
+// avec la même mise et la même cadence. Si oui → on lance la partie direct.
+const matchQueue = {};
 
 // ── Auth Socket.io ──────────────────────────────────────────
 io.use((socket, next) => {
@@ -130,8 +135,141 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Rejoindre une partie existante
-  socket.on('join_game', async ({ gameId }) => {
+  // ── MATCHMAKING ────────────────────────────────────────────
+  socket.on('find_match', async ({ bet, timeControl }) => {
+    const VALID_BETS = [500, 1000, 5000, 10000]; // 5, 10, 50, 100€ en centimes
+    const VALID_TC   = [60, 180, 300, 600, 1800];
+
+    if (!VALID_BETS.includes(bet))      return socket.emit('match_error', 'Mise invalide');
+    if (!VALID_TC.includes(timeControl)) return socket.emit('match_error', 'Cadence invalide');
+
+    // Vérifier le solde avant de mettre en file
+    const r = await pool.query('SELECT balance FROM users WHERE id=$1', [uid]);
+    if (!r.rows.length || r.rows[0].balance < bet)
+      return socket.emit('match_error', 'Solde insuffisant');
+
+    const key = `${timeControl}_${bet}`;
+
+    // Si quelqu'un attend déjà dans cette file → on les match
+    if (matchQueue[key] && matchQueue[key].uid !== uid) {
+      const opponent = matchQueue[key];
+      delete matchQueue[key];
+
+      // Assigner les couleurs aléatoirement
+      const creatorIsWhite = Math.random() < 0.5;
+      const whiteId   = creatorIsWhite ? opponent.uid   : uid;
+      const blackId   = creatorIsWhite ? uid             : opponent.uid;
+      const whiteName = creatorIsWhite ? opponent.uname  : uname;
+      const blackName = creatorIsWhite ? uname            : opponent.uname;
+
+      // Débiter les deux joueurs en une transaction atomique
+      const client = await pool.connect();
+      let gameId;
+      try {
+        await client.query('BEGIN');
+
+        const w = await client.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [whiteId]);
+        const b = await client.query('SELECT balance FROM users WHERE id=$2 FOR UPDATE', [blackId]);
+        if (w.rows[0].balance < bet || b.rows[0].balance < bet) {
+          await client.query('ROLLBACK');
+          // Remettre l'adversaire en file si c'est lui qui n'a plus de solde
+          if (b.rows[0].balance < bet) {
+            socket.emit('match_error', 'L\'adversaire n\'avait plus assez de solde');
+          } else {
+            socket.emit('match_error', 'Solde insuffisant');
+          }
+          // Remettre l'opponent en file
+          matchQueue[key] = opponent;
+          broadcastQueueCounts();
+          return;
+        }
+
+        await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [bet, whiteId]);
+        await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [bet, blackId]);
+
+        const { v4: uuidv4 } = require('uuid');
+        gameId = uuidv4();
+        const pot = bet * 2;
+
+        await client.query(
+          'INSERT INTO games(id,white_id,black_id,bet,pot,time_control) VALUES($1,$2,$3,$4,$5,$6)',
+          [gameId, whiteId, blackId, bet, pot, timeControl]
+        );
+        await client.query('COMMIT');
+
+        // Créer la partie en mémoire
+        games.set(gameId, {
+          id: gameId,
+          players: { white: whiteId, black: blackId },
+          names:   { white: whiteName, black: blackName },
+          turn: 'w',
+          bet,
+          pot,
+          timeControl,
+          timers: { w: timeControl, b: timeControl },
+          lastTick: Date.now(),
+          finished: false,
+          moveHistory: [],
+          creatorId: null,
+        });
+
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Erreur match creation:', e);
+        socket.emit('match_error', 'Erreur serveur');
+        matchQueue[key] = opponent;
+        broadcastQueueCounts();
+        return;
+      } finally { client.release(); }
+
+      // Joindre les deux sockets à la room
+      const oppSocket = io.sockets.sockets.get(opponent.socketId);
+      socket.join(gameId);
+      if (oppSocket) oppSocket.join(gameId);
+
+      const game = games.get(gameId);
+
+      // Notifier les deux joueurs de leur couleur et balance
+      const myColor  = whiteId === uid ? 'w' : 'b';
+      const oppColor = myColor === 'w' ? 'b' : 'w';
+      socket.emit('color_assigned', myColor);
+      socket.emit('balance_update', { delta: -bet });
+      if (oppSocket) {
+        oppSocket.emit('color_assigned', oppColor);
+        oppSocket.emit('balance_update', { delta: -bet });
+      }
+
+      // Démarrer la partie pour les deux
+      startGameTimer(gameId);
+      io.to(gameId).emit('game_start', {
+        white: whiteName,
+        black: blackName,
+        bet:   game.bet,
+        pot:   game.pot,
+        timeControl,
+        gameId,
+      });
+
+      broadcastLobby();
+      broadcastQueueCounts();
+      console.log(`🎮 Match trouvé : ${whiteName} vs ${blackName} — ${bet/100}€ — ${timeControl}s`);
+
+    } else {
+      // Personne ne attend → mettre en file d'attente
+      // Si le joueur était déjà en file, le remplacer
+      removeFromQueue(uid);
+      matchQueue[key] = { socketId: socket.id, uid, uname, bet, timeControl };
+      socket.emit('match_searching', { bet, timeControl });
+      broadcastQueueCounts();
+      console.log(`🔍 ${uname} cherche une partie — ${bet/100}€ — ${timeControl}s`);
+    }
+  });
+
+  socket.on('cancel_match', () => {
+    removeFromQueue(uid);
+    socket.emit('match_cancelled');
+    broadcastQueueCounts();
+  });
     const game = games.get(gameId);
     if (!game || game.finished) return socket.emit('error', 'Partie introuvable');
 
@@ -278,6 +416,9 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     console.log(`🔌 ${uname} déconnecté`);
+    // Retirer de la file de matchmaking si en attente
+    removeFromQueue(uid);
+    broadcastQueueCounts();
     // Nettoyer les parties en attente créées par ce joueur (rembourser la mise)
     for (const [gameId, game] of games.entries()) {
       const hasOpponent = game.players.white && game.players.black;
@@ -362,12 +503,36 @@ async function settle(gameId, game, result, reason) {
   broadcastLobby();
 }
 
+// ── Matchmaking helpers ─────────────────────────────────────
+function removeFromQueue(uid) {
+  for (const key of Object.keys(matchQueue)) {
+    if (matchQueue[key].uid === uid) {
+      delete matchQueue[key];
+      break;
+    }
+  }
+}
+
+function broadcastQueueCounts() {
+  // Envoie à tous les connectés le nombre de joueurs qui cherchent par mise/cadence
+  const counts = {};
+  for (const [key, entry] of Object.entries(matchQueue)) {
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  io.emit('queue_counts', counts);
+}
+
 // ── Lobby en temps réel ─────────────────────────────────────
 function broadcastLobby() {
   const lobby = [];
   for (const [id, g] of games.entries()) {
     if (!g.finished && (!g.players.white || !g.players.black)) {
       lobby.push({ id, bet: g.bet, pot: g.pot, timeControl: g.timeControl, creator: g.names.white || g.names.black });
+    }
+  }
+  io.emit('lobby_update', lobby);
+  broadcastQueueCounts();
+}
     }
   }
   io.emit('lobby_update', lobby);

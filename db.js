@@ -76,6 +76,32 @@ async function initDB() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
   `);
 
+  // Migration : Stripe Connect (retraits automatisés)
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id VARCHAR(255);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS payouts_enabled BOOLEAN DEFAULT FALSE;
+    ALTER TABLE withdrawals ALTER COLUMN iban DROP NOT NULL;
+    ALTER TABLE withdrawals ALTER COLUMN iban_name DROP NOT NULL;
+    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS stripe_transfer_id VARCHAR(255);
+    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS stripe_payout_id VARCHAR(255);
+    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS failure_reason VARCHAR(255);
+  `);
+
+  // Corriger automatiquement tout solde négatif existant avant d'ajouter la contrainte
+  await pool.query(`UPDATE users SET balance = 0 WHERE balance < 0;`);
+
+  // Empêcher tout solde négatif au niveau base (filet de sécurité anti-fraude)
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'balance_non_negative'
+      ) THEN
+        ALTER TABLE users ADD CONSTRAINT balance_non_negative CHECK (balance >= 0);
+      END IF;
+    END $$;
+  `);
+
   console.log('✅ Base de données prête');
 }
 

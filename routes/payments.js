@@ -60,14 +60,19 @@ router.post('/deposit', auth, async (req, res) => {
   }
 });
 
-// Webhook Stripe — crédite le compte quand le paiement est confirmé
+// Webhook Stripe — crédite le compte / gère les retraits Connect
 router.post('/webhook', async (req, res) => {
   let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (e) {
-    return res.status(400).send(`Webhook Error: ${e.message}`);
+  const sig = req.headers['stripe-signature'];
+  const secrets = [process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_CONNECT_WEBHOOK_SECRET].filter(Boolean);
+
+  for (const secret of secrets) {
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, secret);
+      break;
+    } catch (e) { /* essaie le secret suivant */ }
   }
+  if (!event) return res.status(400).send('Webhook Error: signature invalide');
 
   if (event.type === 'checkout.session.completed') {
     const s = event.data.object;
@@ -85,6 +90,53 @@ router.post('/webhook', async (req, res) => {
       console.error(e);
     } finally { client.release(); }
   }
+
+  // ── Stripe Connect : statut du compte (onboarding terminé) ──
+  if (event.type === 'account.updated') {
+    const acc = event.data.object;
+    try {
+      await pool.query('UPDATE users SET payouts_enabled=$1 WHERE stripe_account_id=$2', [!!acc.payouts_enabled, acc.id]);
+      console.log(`ℹ️ Compte Connect ${acc.id} → payouts_enabled=${!!acc.payouts_enabled}`);
+    } catch (e) { console.error(e); }
+  }
+
+  // ── Stripe Connect : un virement vers la banque du joueur a échoué après coup ──
+  if (event.type === 'payout.failed') {
+    const payout = event.data.object;
+    const withdrawalId = payout.metadata?.withdrawal_id;
+    const userId = payout.metadata?.user_id;
+    if (withdrawalId && userId) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        // Ne rembourser que si pas déjà marqué failed (évite double remboursement)
+        const wr = await client.query("SELECT status, amount FROM withdrawals WHERE id=$1 AND status != 'failed'", [withdrawalId]);
+        if (wr.rows.length) {
+          const { amount } = wr.rows[0];
+          await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amount, userId]);
+          await client.query("UPDATE withdrawals SET status='failed', failure_reason=$1 WHERE id=$2", [payout.failure_message || 'Payout failed', withdrawalId]);
+          await client.query("UPDATE transactions SET status='failed' WHERE note=$1", [`Retrait #${withdrawalId}`]);
+        }
+        await client.query('COMMIT');
+        console.log(`⚠️ Payout #${withdrawalId} échoué, remboursé`);
+      } catch (e) {
+        await client.query('ROLLBACK');
+        console.error(e);
+      } finally { client.release(); }
+    }
+  }
+
+  // ── Stripe Connect : le virement est arrivé sur le compte bancaire du joueur ──
+  if (event.type === 'payout.paid') {
+    const payout = event.data.object;
+    const withdrawalId = payout.metadata?.withdrawal_id;
+    if (withdrawalId) {
+      try {
+        await pool.query("UPDATE withdrawals SET status='paid' WHERE id=$1 AND status != 'failed'", [withdrawalId]);
+      } catch (e) { console.error(e); }
+    }
+  }
+
   res.json({ received: true });
 });
 
@@ -113,114 +165,160 @@ router.get('/stats', async (req, res) => {
 router.get('/admin', auth, isAdmin, async (req, res) => {
   const r = await pool.query('SELECT * FROM admin_stats WHERE id=1');
   const u = await pool.query('SELECT COUNT(*) FROM users');
-  const w = await pool.query("SELECT * FROM withdrawals WHERE status='pending' ORDER BY created_at DESC");
-  res.json({ ...r.rows[0], total_users: parseInt(u.rows[0].count), pending_withdrawals: w.rows });
+  const w = await pool.query(`
+    SELECT w.*, u.username FROM withdrawals w
+    JOIN users u ON u.id = w.user_id
+    ORDER BY w.created_at DESC LIMIT 20
+  `);
+  res.json({ ...r.rows[0], total_users: parseInt(u.rows[0].count), recent_withdrawals: w.rows });
 });
 
-// ── Sauvegarder l'IBAN du joueur ─────────────────────────────
-router.post('/iban', auth, async (req, res) => {
-  const { iban, iban_name } = req.body;
-  if (!iban || !iban_name) return res.status(400).json({ error: 'IBAN et nom requis' });
-  // Validation basique IBAN
-  const clean = iban.replace(/\s/g, '').toUpperCase();
-  if (clean.length < 15 || clean.length > 34) return res.status(400).json({ error: 'IBAN invalide' });
-  await pool.query('UPDATE users SET iban=$1, iban_name=$2 WHERE id=$3', [clean, iban_name.trim(), req.user.id]);
-  res.json({ ok: true });
+// ── Stripe Connect : créer/récupérer le compte connecté du joueur ──
+async function getOrCreateConnectAccount(userId) {
+  const r = await pool.query('SELECT stripe_account_id, email, username FROM users WHERE id=$1', [userId]);
+  const user = r.rows[0];
+  if (user.stripe_account_id) return user.stripe_account_id;
+
+  const account = await stripe.accounts.create({
+    type: 'express',
+    country: 'FR',
+    email: user.email,
+    capabilities: { transfers: { requested: true } },
+    business_type: 'individual',
+  });
+  await pool.query('UPDATE users SET stripe_account_id=$1 WHERE id=$2', [account.id, userId]);
+  return account.id;
+}
+
+// ── Démarrer/continuer l'onboarding Stripe Connect (configuration des infos de paiement) ──
+router.post('/connect/onboard', auth, async (req, res) => {
+  try {
+    const accountId = await getOrCreateConnectAccount(req.user.id);
+    const link = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/wallet`,
+      return_url:  `${process.env.FRONTEND_URL || 'http://localhost:3000'}/wallet`,
+      type: 'account_onboarding',
+    });
+    res.json({ url: link.url });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Erreur Stripe' });
+  }
 });
 
-// ── Demander un retrait ───────────────────────────────────────
+// ── Statut du compte de paiement (onboarding terminé ? payouts activés ?) ──
+router.get('/connect/status', auth, async (req, res) => {
+  try {
+    const r = await pool.query('SELECT stripe_account_id, payouts_enabled FROM users WHERE id=$1', [req.user.id]);
+    const user = r.rows[0];
+    if (!user.stripe_account_id) return res.json({ configured: false, payouts_enabled: false });
+
+    // Rafraîchir le statut depuis Stripe (au cas où le webhook n'a pas encore été reçu)
+    const account = await stripe.accounts.retrieve(user.stripe_account_id);
+    const payoutsEnabled = !!account.payouts_enabled;
+    if (payoutsEnabled !== user.payouts_enabled) {
+      await pool.query('UPDATE users SET payouts_enabled=$1 WHERE id=$2', [payoutsEnabled, req.user.id]);
+    }
+    res.json({ configured: true, payouts_enabled: payoutsEnabled });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Erreur Stripe' });
+  }
+});
+
+// ── Demander un retrait : automatisé via Stripe Connect ───────
 router.post('/withdraw', auth, async (req, res) => {
   const { amount } = req.body; // en euros
   const cents = Math.round(parseFloat(amount) * 100);
 
-  if (!cents || cents < 1000) return res.status(400).json({ error: 'Retrait minimum : 10€' });
+  if (!Number.isInteger(cents) || cents < 1000) return res.status(400).json({ error: 'Retrait minimum : 10€' });
+  if (cents > 1000000) return res.status(400).json({ error: 'Retrait maximum : 10000€' });
 
+  // 1. Vérifier que le compte de paiement Stripe est configuré et activé
+  const ur = await pool.query('SELECT stripe_account_id, payouts_enabled FROM users WHERE id=$1', [req.user.id]);
+  const userRow = ur.rows[0];
+  if (!userRow.stripe_account_id || !userRow.payouts_enabled) {
+    return res.status(400).json({ error: 'Configure d\'abord tes informations de paiement (bouton "Configurer mes infos de paiement").' });
+  }
+
+  // 2. Débiter le solde de manière atomique et verrouillée — AUCUN retrait n'est créé si le solde est insuffisant
   const client = await pool.connect();
+  let withdrawalId;
   try {
     await client.query('BEGIN');
 
-    // Récupérer le solde et l'IBAN
-    const r = await client.query('SELECT balance, iban, iban_name FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
-    const user = r.rows[0];
+    const r = await client.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [req.user.id]);
+    const balance = r.rows[0].balance;
 
-    if (!user.iban) return res.status(400).json({ error: 'Aucun IBAN enregistré. Ajoute ton IBAN d\'abord.' });
-    if (user.balance < cents) return res.status(400).json({ error: 'Solde insuffisant' });
+    if (balance < cents) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Solde insuffisant' });
+    }
 
-    // Débiter le solde
+    // La contrainte CHECK(balance >= 0) protège en plus contre toute race condition
     await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [cents, req.user.id]);
 
-    // Créer la demande de retrait
     const wr = await client.query(
-      'INSERT INTO withdrawals(user_id,amount,iban,iban_name,status) VALUES($1,$2,$3,$4,$5) RETURNING id',
-      [req.user.id, cents, user.iban, user.iban_name, 'pending']
+      'INSERT INTO withdrawals(user_id,amount,status) VALUES($1,$2,$3) RETURNING id',
+      [req.user.id, cents, 'pending']
     );
+    withdrawalId = wr.rows[0].id;
 
-    // Enregistrer la transaction
     await client.query(
       'INSERT INTO transactions(user_id,type,amount,status,note) VALUES($1,$2,$3,$4,$5)',
-      [req.user.id, 'withdrawal', cents, 'pending', `Retrait #${wr.rows[0].id}`]
+      [req.user.id, 'withdrawal', cents, 'pending', `Retrait #${withdrawalId}`]
     );
 
     await client.query('COMMIT');
-    res.json({ ok: true, withdrawal_id: wr.rows[0].id, message: 'Retrait en cours de traitement (1-3 jours ouvrés)' });
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error(e);
-    res.status(500).json({ error: 'Erreur serveur' });
+    console.error('Erreur création retrait:', e);
+    return res.status(500).json({ error: 'Erreur serveur' });
   } finally { client.release(); }
+
+  // 3. Déclencher le transfert + virement Stripe. En cas d'échec, on rembourse intégralement.
+  try {
+    const transfer = await stripe.transfers.create({
+      amount: cents,
+      currency: 'eur',
+      destination: userRow.stripe_account_id,
+      transfer_group: `withdrawal_${withdrawalId}`,
+    });
+
+    const payout = await stripe.payouts.create(
+      { amount: cents, currency: 'eur', metadata: { withdrawal_id: String(withdrawalId), user_id: String(req.user.id) } },
+      { stripeAccount: userRow.stripe_account_id }
+    );
+
+    await pool.query(
+      "UPDATE withdrawals SET status='approved', processed_at=NOW(), stripe_transfer_id=$1, stripe_payout_id=$2 WHERE id=$3",
+      [transfer.id, payout.id, withdrawalId]
+    );
+    await pool.query("UPDATE transactions SET status='completed' WHERE note=$1", [`Retrait #${withdrawalId}`]);
+    await pool.query('UPDATE admin_stats SET total_withdrawn=total_withdrawn+$1 WHERE id=1', [cents]);
+
+    res.json({ ok: true, withdrawal_id: withdrawalId, message: 'Retrait envoyé ! Il arrivera sur ton compte bancaire dans 1-2 jours ouvrés.' });
+  } catch (e) {
+    console.error('Erreur transfert Stripe, remboursement:', e);
+    // Remboursement intégral — le retrait a échoué, l'argent reste dans le solde du joueur
+    await pool.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [cents, req.user.id]);
+    await pool.query("UPDATE withdrawals SET status='failed', processed_at=NOW(), failure_reason=$1 WHERE id=$2", [e.message?.slice(0, 250) || 'Erreur Stripe', withdrawalId]);
+    await pool.query("UPDATE transactions SET status='failed' WHERE note=$1", [`Retrait #${withdrawalId}`]);
+    res.status(500).json({ error: 'Le virement a échoué, ton solde a été remboursé. Réessaie plus tard.' });
+  }
 });
 
 // ── Liste des retraits du joueur ──────────────────────────────
 router.get('/withdrawals', auth, async (req, res) => {
   const r = await pool.query(
-    'SELECT id,amount,iban,status,created_at,processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20',
+    'SELECT id,amount,status,created_at,processed_at,failure_reason FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20',
     [req.user.id]
   );
   res.json(r.rows);
 });
 
-// ── Admin : approuver un retrait ──────────────────────────────
-router.post('/withdraw/approve/:id', auth, isAdmin, async (req, res) => {
-  const id = parseInt(req.params.id);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      "UPDATE withdrawals SET status='approved', processed_at=NOW() WHERE id=$1",
-      [id]
-    );
-    await client.query(
-      "UPDATE transactions SET status='completed' WHERE note=$1",
-      [`Retrait #${id}`]
-    );
-    await client.query('UPDATE admin_stats SET total_withdrawn=total_withdrawn+(SELECT amount FROM withdrawals WHERE id=$1) WHERE id=1',[id]);
-    await client.query('COMMIT');
-    res.json({ ok: true });
-  } catch(e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'Erreur' });
-  } finally { client.release(); }
-});
-
-// ── Admin : rejeter un retrait (rembourse le joueur) ──────────
-router.post('/withdraw/reject/:id', auth, isAdmin, async (req, res) => {
-  const id = parseInt(req.params.id);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const r = await client.query('SELECT user_id,amount FROM withdrawals WHERE id=$1', [id]);
-    if (!r.rows.length) return res.status(404).json({ error: 'Introuvable' });
-    const { user_id, amount } = r.rows[0];
-    // Rembourser
-    await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amount, user_id]);
-    await client.query("UPDATE withdrawals SET status='rejected', processed_at=NOW() WHERE id=$1", [id]);
-    await client.query("UPDATE transactions SET status='rejected' WHERE note=$1", [`Retrait #${id}`]);
-    await client.query('COMMIT');
-    res.json({ ok: true });
-  } catch(e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'Erreur' });
-  } finally { client.release(); }
-});
+// (Les retraits sont désormais automatisés via Stripe Connect — plus besoin d'approbation manuelle.
+//  Voir POST /withdraw qui débite, transfère et paie automatiquement, avec remboursement auto en cas d'échec.)
 
 module.exports = router;

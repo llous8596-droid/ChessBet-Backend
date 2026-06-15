@@ -459,34 +459,25 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       <div style="font-size:12px;color:var(--muted);margin-top:.4rem;">Gains disponibles pour retrait</div>
     </div>
 
-    <!-- IBAN -->
+    <!-- Configuration des informations de paiement (Stripe Connect) -->
     <div class="card" style="margin-bottom:1.2rem;">
-      <h2>MON IBAN</h2>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem;">Tes gains seront virés sur ce compte bancaire.</p>
-      <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;">
-        <div class="field" style="margin:0;flex:2;min-width:180px;">
-          <label>IBAN</label>
-          <input type="text" id="iban-input" placeholder="FR76 3000 6000 0112 3456 7890 189">
-        </div>
-        <div class="field" style="margin:0;flex:1;min-width:140px;">
-          <label>NOM DU TITULAIRE</label>
-          <input type="text" id="iban-name-input" placeholder="Jean Dupont">
-        </div>
-        <button class="btn btn-gold" onclick="saveIban()">SAUVEGARDER</button>
-      </div>
-      <div id="iban-saved" style="font-size:12px;color:var(--green2);margin-top:.6rem;display:none;">✓ IBAN enregistré</div>
+      <h2>INFORMATIONS DE PAIEMENT</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem;">Configure ton compte bancaire via Stripe pour recevoir tes gains automatiquement.</p>
+      <div id="connect-status-ok" style="display:none;font-size:12px;color:var(--green2);margin-bottom:.8rem;">✓ Compte de paiement configuré — les retraits sont automatiques.</div>
+      <div id="connect-status-pending" style="display:none;font-size:12px;color:var(--gold);margin-bottom:.8rem;">⚠️ Configuration incomplète. Termine la configuration pour pouvoir retirer.</div>
+      <button class="btn btn-gold" id="connect-onboard-btn" onclick="startConnectOnboarding()">CONFIGURER MES INFOS DE PAIEMENT →</button>
     </div>
 
     <!-- Retrait -->
     <div class="card" style="margin-bottom:1.2rem;">
       <h2>DEMANDER UN RETRAIT</h2>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem;">Minimum 10€ — Traitement sous 1 à 3 jours ouvrés.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem;">Minimum 10€ — Virement automatique sous 1 à 2 jours ouvrés.</p>
       <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;">
         <div class="field" style="margin:0;flex:1;min-width:140px;">
           <label>MONTANT (€)</label>
           <input type="number" id="withdraw-amount" placeholder="50" min="10" step="5">
         </div>
-        <button class="btn btn-gold" onclick="doWithdrawPlayer()">RETIRER →</button>
+        <button class="btn btn-gold" id="withdraw-btn" onclick="doWithdrawPlayer()">RETIRER →</button>
       </div>
       <div class="quick-bets" style="margin-top:10px;">
         <span style="font-size:11px;color:var(--muted);align-self:center;">RAPIDE :</span>
@@ -507,11 +498,10 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
         <thead><tr>
           <th style="padding:10px;">DATE</th>
           <th>MONTANT</th>
-          <th>IBAN</th>
           <th>STATUT</th>
         </tr></thead>
         <tbody id="withdraw-history">
-          <tr><td colspan="4" style="text-align:center;padding:1.5rem;color:var(--muted);">Aucun retrait</td></tr>
+          <tr><td colspan="3" style="text-align:center;padding:1.5rem;color:var(--muted);">Aucun retrait</td></tr>
         </tbody>
       </table>
     </div>
@@ -546,12 +536,12 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       </div>
     </div>
 
-    <!-- Retraits joueurs en attente -->
+    <!-- Historique des retraits joueurs (automatisés via Stripe Connect) -->
     <div class="withdraw-box" style="margin-top:1rem;">
-      <h2>RETRAITS JOUEURS EN ATTENTE</h2>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem;">Approuve ou rejette les demandes. En prod tu fais le virement manuellement sur l'IBAN avant d'approuver.</p>
-      <div id="pending-withdrawals">
-        <div style="color:var(--muted);font-size:12px;">Aucune demande en attente</div>
+      <h2>RETRAITS JOUEURS RÉCENTS</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem;">Les retraits sont automatiques (Stripe Connect). Liste en lecture seule.</p>
+      <div id="recent-withdrawals">
+        <div style="color:var(--muted);font-size:12px;">Aucun retrait</div>
       </div>
     </div>
   </div>
@@ -1200,28 +1190,22 @@ async function loadAdminStats() {
     document.getElementById('kpi-users').textContent = r.total_users || 0;
     document.getElementById('comm-total-val').textContent = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
 
-    // Retraits joueurs en attente
-    const pw = document.getElementById('pending-withdrawals');
-    const pending = r.pending_withdrawals || [];
-    if (!pending.length) {
-      pw.innerHTML = '<div style="color:var(--muted);font-size:12px;">Aucune demande en attente ✓</div>';
+    // Retraits joueurs récents (automatisés)
+    const pw = document.getElementById('recent-withdrawals');
+    const recent = r.recent_withdrawals || [];
+    const statusLabel = { pending:'⏳ En cours', approved:'✅ Envoyé', paid:'✅ Reçu', failed:'❌ Échoué (remboursé)' };
+    const statusColor = { pending:'var(--gold)', approved:'var(--green2)', paid:'var(--green2)', failed:'#e44' };
+    if (!recent.length) {
+      pw.innerHTML = '<div style="color:var(--muted);font-size:12px;">Aucun retrait</div>';
     } else {
-      pw.innerHTML = pending.map(w => `
+      pw.innerHTML = recent.map(w => `
         <div style="display:flex;align-items:center;gap:1rem;padding:.8rem;background:var(--bg3);border-radius:6px;margin-bottom:.5rem;flex-wrap:wrap;">
           <div style="flex:1;min-width:120px;">
-            <div style="font-size:12px;color:var(--muted);">Joueur #${w.user_id}</div>
+            <div style="font-size:12px;color:var(--muted);">${w.username}</div>
             <div style="font-family:monospace;color:var(--gold);font-size:1.1rem;">€ ${(w.amount/100).toFixed(2)}</div>
           </div>
-          <div style="flex:2;min-width:180px;">
-            <div style="font-size:11px;color:var(--muted);">IBAN</div>
-            <div style="font-family:monospace;font-size:12px;">${w.iban.replace(/(.{4})/g,'$1 ').trim()}</div>
-            <div style="font-size:11px;color:var(--muted);">${w.iban_name}</div>
-          </div>
           <div style="font-size:11px;color:var(--muted);">${new Date(w.created_at).toLocaleDateString('fr-FR')}</div>
-          <div style="display:flex;gap:.5rem;">
-            <button class="btn btn-green btn-sm" onclick="approveWithdrawal(${w.id})">✓ Approuver</button>
-            <button class="btn btn-red btn-sm" onclick="rejectWithdrawal(${w.id})">✕ Rejeter</button>
-          </div>
+          <div style="color:${statusColor[w.status]||'var(--muted)'};font-size:12px;">${statusLabel[w.status]||w.status}</div>
         </div>
       `).join('');
     }
@@ -1235,13 +1219,8 @@ async function loadWallet() {
   // Solde
   document.getElementById('wallet-balance').textContent = `€ ${(balance/100).toFixed(2)}`;
 
-  // IBAN sauvegardé
-  const me2 = await api('/api/auth/me', 'GET');
-  if (me2.iban) {
-    document.getElementById('iban-input').value = me2.iban.replace(/(.{4})/g,'$1 ').trim();
-    document.getElementById('iban-name-input').value = me2.iban_name || '';
-    document.getElementById('iban-saved').style.display = 'block';
-  }
+  // Statut du compte de paiement Stripe Connect
+  await refreshConnectStatus();
 
   // Bouton "Tout"
   document.getElementById('qb-all').onclick = () => {
@@ -1252,66 +1231,83 @@ async function loadWallet() {
   const hist = await api('/api/payments/withdrawals', 'GET');
   const tb = document.getElementById('withdraw-history');
   if (!hist.length) {
-    tb.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:1.5rem;color:var(--muted);">Aucun retrait</td></tr>';
+    tb.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:1.5rem;color:var(--muted);">Aucun retrait</td></tr>';
   } else {
-    const statusLabel = { pending:'⏳ En attente', approved:'✅ Approuvé', rejected:'❌ Rejeté' };
-    const statusColor = { pending:'var(--gold)', approved:'var(--green2)', rejected:'#e44' };
+    const statusLabel = { pending:'⏳ En cours', approved:'✅ Envoyé', paid:'✅ Reçu', failed:'❌ Échoué (remboursé)' };
+    const statusColor = { pending:'var(--gold)', approved:'var(--green2)', paid:'var(--green2)', failed:'#e44' };
     tb.innerHTML = hist.map(w => `<tr>
       <td style="color:var(--muted);font-size:12px;">${new Date(w.created_at).toLocaleDateString('fr-FR')}</td>
       <td class="amt">€ ${(w.amount/100).toFixed(2)}</td>
-      <td style="font-family:monospace;font-size:11px;color:var(--muted);">${w.iban.replace(/(.{4})/g,'$1 ').trim()}</td>
-      <td style="color:${statusColor[w.status]};font-size:12px;">${statusLabel[w.status]||w.status}</td>
+      <td style="color:${statusColor[w.status]||'var(--muted)'};font-size:12px;">${statusLabel[w.status]||w.status}</td>
     </tr>`).join('');
   }
 }
 
-async function saveIban() {
-  const iban = document.getElementById('iban-input').value.replace(/\s/g,'');
-  const name = document.getElementById('iban-name-input').value.trim();
-  if (!iban || !name) return showToast('Entre ton IBAN et ton nom');
-  const r = await api('/api/payments/iban', 'POST', { iban, iban_name: name });
+async function refreshConnectStatus() {
+  const r = await api('/api/payments/connect/status', 'GET');
+  const okEl = document.getElementById('connect-status-ok');
+  const pendingEl = document.getElementById('connect-status-pending');
+  const onboardBtn = document.getElementById('connect-onboard-btn');
+  const withdrawBtn = document.getElementById('withdraw-btn');
+
+  okEl.style.display = 'none';
+  pendingEl.style.display = 'none';
+
+  if (r.payouts_enabled) {
+    okEl.style.display = 'block';
+    onboardBtn.textContent = 'MODIFIER MES INFOS DE PAIEMENT';
+    withdrawBtn.disabled = false;
+    withdrawBtn.style.opacity = '1';
+  } else {
+    pendingEl.style.display = 'block';
+    onboardBtn.textContent = r.configured ? 'TERMINER LA CONFIGURATION →' : 'CONFIGURER MES INFOS DE PAIEMENT →';
+    withdrawBtn.disabled = true;
+    withdrawBtn.style.opacity = '.5';
+  }
+}
+
+async function startConnectOnboarding() {
+  const r = await api('/api/payments/connect/onboard', 'POST');
   if (r.error) return showToast('❌ ' + r.error);
-  document.getElementById('iban-saved').style.display = 'block';
-  showToast('✓ IBAN sauvegardé');
+  window.location.href = r.url; // Redirige vers Stripe (onboarding hébergé)
 }
 
 async function doWithdrawPlayer() {
   const amtInput = document.getElementById('withdraw-amount').value;
   const amount = parseFloat(amtInput);
-  if (!amount || amount < 10) return showToast('Minimum 10€');
-  if (amount * 100 > balance) return showToast('Solde insuffisant');
+  if (!Number.isFinite(amount) || amount < 10) return showToast('Minimum 10€');
+  if (amount > 10000) return showToast('Maximum 10000€');
+  if (Math.round(amount * 100) > balance) return showToast('Solde insuffisant');
+
+  const withdrawBtn = document.getElementById('withdraw-btn');
+  withdrawBtn.disabled = true;
+  showToast('⏳ Traitement du retrait...');
 
   const r = await api('/api/payments/withdraw', 'POST', { amount });
+  withdrawBtn.disabled = false;
+
   if (r.error) return showToast('❌ ' + r.error);
 
-  balance -= Math.round(amount * 100);
-  updateBalanceUI();
-  showToast('✓ Retrait en cours — 1 à 3 jours ouvrés');
+  // Le serveur a déjà débité/remboursé selon le résultat — on resynchronise depuis le serveur
+  const me2 = await api('/api/auth/me', 'GET');
+  if (!me2.error) { balance = me2.balance; updateBalanceUI(); }
+
+  showToast('✓ ' + (r.message || 'Retrait envoyé'));
   loadWallet();
 }
 
 // ============================================================
-//  ADMIN — RETRAITS JOUEURS
+//  ADMIN — RETRAIT DES COMMISSIONS (plateforme)
 // ============================================================
 function doWithdraw() {
   const iban = document.getElementById('admin-iban-input').value.trim();
   if (!iban) return showToast('Entre ton IBAN');
-  showToast('✓ Virement initié — 1 à 2 jours ouvrés');
+  showToast('Fonctionnalité à implémenter : virement des commissions de la plateforme vers ton compte.');
 }
 
-async function approveWithdrawal(id) {
-  const r = await api(`/api/payments/withdraw/approve/${id}`, 'POST');
-  if (r.error) return showToast('❌ ' + r.error);
-  showToast('✓ Retrait approuvé');
-  loadAdminStats();
-}
-
-async function rejectWithdrawal(id) {
-  const r = await api(`/api/payments/withdraw/reject/${id}`, 'POST');
-  if (r.error) return showToast('❌ ' + r.error);
-  showToast('✓ Retrait rejeté — joueur remboursé');
-  loadAdminStats();
-}
+// ============================================================
+//  ADMIN — RETRAITS JOUEURS (lecture seule, automatisés via Stripe Connect)
+// ============================================================
 
 // ============================================================
 //  NAV / PAGES

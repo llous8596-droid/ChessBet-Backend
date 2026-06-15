@@ -1,32 +1,30 @@
 const { Pool } = require('pg');
 
-// Parse la DATABASE_URL pour forcer IPv4
-// Supabase donne parfois une adresse IPv6 qui ne marche pas sur Render free tier
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  // Force IPv4
   family: 4,
-  // Paramètres de connexion robustes
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
   max: 10,
 });
 
 async function initDB() {
+  // ── Tables principales ──────────────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
-      id         SERIAL PRIMARY KEY,
-      username   VARCHAR(50) UNIQUE NOT NULL,
-      email      VARCHAR(255) UNIQUE NOT NULL,
-      password   VARCHAR(255) NOT NULL,
-      balance    INTEGER DEFAULT 0,
+      id                 SERIAL PRIMARY KEY,
+      username           VARCHAR(50) UNIQUE NOT NULL,
+      email              VARCHAR(255) UNIQUE NOT NULL,
+      password           VARCHAR(255) NOT NULL,
+      balance            INTEGER DEFAULT 0,
+      is_admin           BOOLEAN DEFAULT FALSE,
       stripe_customer_id VARCHAR(255),
-      iban       VARCHAR(50),
-      iban_name  VARCHAR(100),
-      is_admin   BOOLEAN DEFAULT FALSE,
-      created_at TIMESTAMP DEFAULT NOW()
+      stripe_account_id  VARCHAR(255),
+      payouts_enabled    BOOLEAN DEFAULT FALSE,
+      created_at         TIMESTAMP DEFAULT NOW()
     );
+
     CREATE TABLE IF NOT EXISTS games (
       id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       white_id     INTEGER REFERENCES users(id),
@@ -41,6 +39,7 @@ async function initDB() {
       finished     BOOLEAN DEFAULT FALSE,
       created_at   TIMESTAMP DEFAULT NOW()
     );
+
     CREATE TABLE IF NOT EXISTS transactions (
       id         SERIAL PRIMARY KEY,
       user_id    INTEGER REFERENCES users(id),
@@ -51,16 +50,19 @@ async function initDB() {
       note       VARCHAR(255),
       created_at TIMESTAMP DEFAULT NOW()
     );
+
     CREATE TABLE IF NOT EXISTS withdrawals (
-      id         SERIAL PRIMARY KEY,
-      user_id    INTEGER REFERENCES users(id),
-      amount     INTEGER NOT NULL,
-      iban       VARCHAR(50) NOT NULL,
-      iban_name  VARCHAR(100) NOT NULL,
-      status     VARCHAR(20) DEFAULT 'pending',
-      processed_at TIMESTAMP,
-      created_at TIMESTAMP DEFAULT NOW()
+      id                  SERIAL PRIMARY KEY,
+      user_id             INTEGER REFERENCES users(id),
+      amount              INTEGER NOT NULL,
+      status              VARCHAR(20) DEFAULT 'pending',
+      stripe_transfer_id  VARCHAR(255),
+      stripe_payout_id    VARCHAR(255),
+      failure_reason      VARCHAR(500),
+      processed_at        TIMESTAMP,
+      created_at          TIMESTAMP DEFAULT NOW()
     );
+
     CREATE TABLE IF NOT EXISTS admin_stats (
       id               INTEGER PRIMARY KEY DEFAULT 1,
       total_commission INTEGER DEFAULT 0,
@@ -68,29 +70,33 @@ async function initDB() {
       total_games      INTEGER DEFAULT 0,
       total_withdrawn  INTEGER DEFAULT 0
     );
+
     INSERT INTO admin_stats(id) VALUES(1) ON CONFLICT DO NOTHING;
   `);
 
-  // Migration : ajouter la colonne is_admin si elle n'existe pas (table déjà créée avant cette mise à jour)
+  // ── Migrations — colonnes ajoutées progressivement ──────────
+  // Ces ALTER TABLE sont idempotents grâce à IF NOT EXISTS
   await pool.query(`
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
-  `);
-
-  // Migration : Stripe Connect (retraits automatisés)
-  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin          BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id VARCHAR(255);
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS payouts_enabled BOOLEAN DEFAULT FALSE;
-    ALTER TABLE withdrawals ALTER COLUMN iban DROP NOT NULL;
-    ALTER TABLE withdrawals ALTER COLUMN iban_name DROP NOT NULL;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS payouts_enabled   BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);
+
+    ALTER TABLE transactions ADD COLUMN IF NOT EXISTS note       VARCHAR(255);
+
     ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS stripe_transfer_id VARCHAR(255);
-    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS stripe_payout_id VARCHAR(255);
-    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS failure_reason VARCHAR(255);
+    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS stripe_payout_id   VARCHAR(255);
+    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS failure_reason     VARCHAR(500);
+
+    -- Rendre iban/iban_name optionnels (ancienne version les avait NOT NULL)
+    ALTER TABLE withdrawals ALTER COLUMN iban     DROP NOT NULL;
+    ALTER TABLE withdrawals ALTER COLUMN iban_name DROP NOT NULL;
+
+    ALTER TABLE admin_stats ADD COLUMN IF NOT EXISTS total_withdrawn INTEGER DEFAULT 0;
   `);
 
-  // Corriger automatiquement tout solde négatif existant avant d'ajouter la contrainte
+  // ── Contrainte anti-solde-négatif (filet de sécurité) ───────
   await pool.query(`UPDATE users SET balance = 0 WHERE balance < 0;`);
-
-  // Empêcher tout solde négatif au niveau base (filet de sécurité anti-fraude)
   await pool.query(`
     DO $$
     BEGIN

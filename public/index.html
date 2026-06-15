@@ -542,14 +542,19 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
     </div>
     <div class="withdraw-box">
       <h2>COMMISSIONS DISPONIBLES</h2>
-      <div class="comm-total"><small>TOTAL ACCUMULÉ</small><span id="comm-total-val">€ 0</span></div>
-      <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;">
-        <div class="field" style="margin:0;flex:1;min-width:200px;">
+      <div class="comm-total"><small>TOTAL</small><span id="comm-total-val">€ 0 accumulées — € 0.00 disponibles</span></div>
+      <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;margin-top:1rem;">
+        <div class="field" style="margin:0;flex:2;min-width:200px;">
           <label>TON IBAN</label>
-          <input type="text" id="admin-iban-input" placeholder="FR76 3000 ...">
+          <input type="text" id="admin-iban-input" placeholder="FR76 3000 6000 0112 3456 7890 189">
+        </div>
+        <div class="field" style="margin:0;flex:1;min-width:120px;">
+          <label>MONTANT — max <span id="admin-withdraw-max">€ 0</span></label>
+          <input type="number" id="admin-withdraw-amount" placeholder="0" min="1" step="0.01">
         </div>
         <button class="btn btn-gold" onclick="doWithdraw()">RETIRER →</button>
       </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:.8rem;">Virement SEPA via Stripe — délai 1-2 jours ouvrés. Laisse le montant vide pour tout retirer.</p>
     </div>
 
     <!-- Historique des retraits joueurs (automatisés via Stripe Connect) -->
@@ -1341,7 +1346,14 @@ async function loadAdminStats() {
     document.getElementById('kpi-vol').textContent   = `€ ${((r.total_volume||0)/100).toLocaleString()}`;
     document.getElementById('kpi-comm').textContent  = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
     document.getElementById('kpi-users').textContent = r.total_users || 0;
-    document.getElementById('comm-total-val').textContent = `€ ${((r.total_commission||0)/100).toLocaleString()}`;
+
+    const available = ((r.total_commission||0) - (r.total_withdrawn_admin||0));
+    const availEur  = (available/100).toFixed(2);
+    document.getElementById('comm-total-val').textContent = `€ ${(r.total_commission/100).toLocaleString()} accumulées — € ${availEur} disponibles`;
+    document.getElementById('admin-withdraw-max').textContent = `€ ${availEur}`;
+    // Pré-remplir le montant avec le max disponible
+    const amtInput = document.getElementById('admin-withdraw-amount');
+    if (amtInput && !amtInput.value) amtInput.value = availEur;
 
     // Retraits joueurs récents (automatisés)
     const pw = document.getElementById('recent-withdrawals');
@@ -1469,10 +1481,27 @@ async function doWithdrawPlayer() {
 // ============================================================
 //  ADMIN — RETRAIT DES COMMISSIONS (plateforme)
 // ============================================================
-function doWithdraw() {
-  const iban = document.getElementById('admin-iban-input').value.trim();
+async function doWithdraw() {
+  const iban   = document.getElementById('admin-iban-input').value.trim();
+  const amtRaw = document.getElementById('admin-withdraw-amount').value.trim();
   if (!iban) return showToast('Entre ton IBAN');
-  showToast('Fonctionnalité à implémenter : virement des commissions de la plateforme vers ton compte.');
+
+  const amtEur  = parseFloat(amtRaw);
+  const amtCents = amtEur > 0 ? Math.round(amtEur * 100) : null;
+
+  const btn = document.querySelector('[onclick="doWithdraw()"]');
+  btn.disabled = true; btn.textContent = '⏳ En cours...';
+
+  const r = await api('/api/payments/admin/withdraw', 'POST', {
+    iban,
+    amount_cents: amtCents,
+  });
+
+  btn.disabled = false; btn.textContent = 'RETIRER →';
+
+  if (r.error) return showToast('❌ ' + r.error);
+  showToast('✅ ' + r.message);
+  loadAdminStats();
 }
 
 // ============================================================

@@ -93,6 +93,7 @@ async function initDB() {
     ALTER TABLE withdrawals ALTER COLUMN iban_name DROP NOT NULL;
 
     ALTER TABLE admin_stats ADD COLUMN IF NOT EXISTS total_withdrawn INTEGER DEFAULT 0;
+    ALTER TABLE admin_stats ADD COLUMN IF NOT EXISTS total_withdrawn_admin INTEGER DEFAULT 0;
   `);
 
   // ── Contrainte anti-solde-négatif (filet de sécurité) ───────

@@ -185,6 +185,13 @@ async function getOrCreateConnectAccount(userId) {
     email: user.email,
     capabilities: { transfers: { requested: true } },
     business_type: 'individual',
+    business_profile: {
+      // Décrit l'activité de la plateforme (pas celle du joueur), pour que
+      // Stripe ne demande pas de "nom d'entreprise"/"site web" au joueur.
+      product_description: 'Gains de parties d\'échecs en ligne (ChessBet)',
+      url: process.env.FRONTEND_URL || 'https://chessbet-y4ay.onrender.com',
+      mcc: '7995', // Jeux / paris (Betting/Casino Gambling)
+    },
   });
   await pool.query('UPDATE users SET stripe_account_id=$1 WHERE id=$2', [account.id, userId]);
   return account.id;

@@ -26,11 +26,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api/auth',     require('./routes/auth'));
 app.use('/api/payments', require('./routes/payments'));
 
-// Toutes les autres routes → renvoie index.html (SPA)
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
 // ── Parties en mémoire ──────────────────────────────────────
 // gameId → { id, players:{white,black}, turn, bet, pot, timeControl, timers, finished }
 const games = new Map();
@@ -386,6 +381,25 @@ app.get('/api/lobby', (req, res) => {
       lobby.push({ id, bet: g.bet, pot: g.pot, timeControl: g.timeControl, creator: g.names.white || g.names.black });
   }
   res.json(lobby);
+});
+
+// 404 JSON pour les routes /api/* non trouvées (évite de renvoyer index.html en JSON)
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Route introuvable' });
+});
+
+// Toutes les autres routes (non-API) → renvoie index.html (SPA)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Gestionnaire d'erreurs global : toute erreur sur /api/* renvoie du JSON, jamais une page HTML
+app.use((err, req, res, next) => {
+  console.error('Erreur non gérée:', err);
+  if (req.path.startsWith('/api')) {
+    return res.status(500).json({ error: err.message || 'Erreur serveur' });
+  }
+  res.status(500).send('Erreur serveur');
 });
 
 // ── Démarrage ────────────────────────────────────────────────

@@ -803,13 +803,25 @@ function initSocket() {
   socket.on('waiting_opponent', () => showWaiting(true));
 
   // Partie démarre
-  socket.on('game_start', ({ white, black, bet, pot, timeControl }) => {
+  socket.on('game_start', ({ gameId: gId, white, black, bet, pot, timeControl }) => {
+    // Pour le matchmaking : currentGameId n'est pas encore set
+    if (gId && !currentGameId) {
+      currentGameId = gId;
+      currentPot    = pot;
+    }
     showWaiting(false);
     gameStarted = true;
     gameActive  = true;
     waitingGame = false;
     timers.w = timeControl; timers.b = timeControl;
     localStorage.setItem('cb_current_game', currentGameId);
+
+    // Si on arrive ici sans être sur la page game (cas matchmaking), on y va
+    if (!document.getElementById('page-game').classList.contains('active')) {
+      initBoard();
+      showPage('game');
+    }
+
     const betEur = bet / 100;
     const potEur = pot / 100;
     const commEur = Math.round(potEur * COMM * 100) / 100;

@@ -29,6 +29,16 @@ router.post('/deposit', auth, async (req, res) => {
     const r = await pool.query('SELECT stripe_customer_id,email,username FROM users WHERE id=$1', [req.user.id]);
     const user = r.rows[0];
     let cid = user.stripe_customer_id;
+
+    if (cid) {
+      // Vérifier que le customer existe encore côté Stripe (peut différer entre mode test/live)
+      try {
+        await stripe.customers.retrieve(cid);
+      } catch {
+        cid = null;
+      }
+    }
+
     if (!cid) {
       const c = await stripe.customers.create({ email: user.email, name: user.username });
       cid = c.id;
@@ -177,7 +187,16 @@ router.get('/admin', auth, isAdmin, async (req, res) => {
 async function getOrCreateConnectAccount(userId) {
   const r = await pool.query('SELECT stripe_account_id, email, username FROM users WHERE id=$1', [userId]);
   const user = r.rows[0];
-  if (user.stripe_account_id) return user.stripe_account_id;
+
+  if (user.stripe_account_id) {
+    try {
+      await stripe.accounts.retrieve(user.stripe_account_id);
+      return user.stripe_account_id;
+    } catch {
+      // Compte introuvable côté Stripe (ex: mode test/live différent) → on en recrée un
+      await pool.query('UPDATE users SET stripe_account_id=NULL, payouts_enabled=FALSE WHERE id=$1', [userId]);
+    }
+  }
 
   const account = await stripe.accounts.create({
     type: 'express',
@@ -222,7 +241,14 @@ router.get('/connect/status', auth, async (req, res) => {
     if (!user.stripe_account_id) return res.json({ configured: false, payouts_enabled: false });
 
     // Rafraîchir le statut depuis Stripe (au cas où le webhook n'a pas encore été reçu)
-    const account = await stripe.accounts.retrieve(user.stripe_account_id);
+    let account;
+    try {
+      account = await stripe.accounts.retrieve(user.stripe_account_id);
+    } catch {
+      // Compte introuvable côté Stripe (mode test/live différent) → considérer comme non configuré
+      await pool.query('UPDATE users SET stripe_account_id=NULL, payouts_enabled=FALSE WHERE id=$1', [req.user.id]);
+      return res.json({ configured: false, payouts_enabled: false });
+    }
     const payoutsEnabled = !!account.payouts_enabled;
     if (payoutsEnabled !== user.payouts_enabled) {
       await pool.query('UPDATE users SET payouts_enabled=$1 WHERE id=$2', [payoutsEnabled, req.user.id]);

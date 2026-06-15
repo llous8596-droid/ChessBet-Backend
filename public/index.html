@@ -337,7 +337,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
     <div class="card" style="padding:0;overflow:hidden;">
       <div style="padding:1rem 1.2rem;border-bottom:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
         <h2 style="margin:0;font-size:12px;color:var(--gold);letter-spacing:2px;">PARTIES EN ATTENTE</h2>
-        <button class="btn btn-ghost btn-sm" onclick="createGame()">+ Créer une partie</button>
+        <button class="btn btn-ghost btn-sm" onclick="openCreateModal()">+ Créer une partie</button>
       </div>
       <table class="tbl" style="width:100%;">
         <thead><tr>
@@ -621,6 +621,45 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
   </div>
 </div>
 
+<!-- Créer une partie modal -->
+<div class="overlay" id="create-overlay">
+  <div class="modal" style="max-width:420px;">
+    <h2>+ CRÉER UNE PARTIE</h2>
+    <p>Configurez votre partie et attendez un adversaire.</p>
+    <div class="field" style="text-align:left;margin-bottom:1rem;">
+      <label>MISE (€)</label>
+      <input type="number" id="create-bet" value="10" min="5" max="5000" step="5" oninput="updatePreview()" style="width:100%;padding:10px;background:var(--bg3);border:0.5px solid var(--border2);border-radius:6px;color:var(--fg);font-size:15px;">
+      <div class="quick-bets" style="justify-content:center;margin-top:.5rem;">
+        <button class="qb" onclick="document.getElementById('create-bet').value=5;updatePreview()">€ 5</button>
+        <button class="qb" onclick="document.getElementById('create-bet').value=10;updatePreview()">€ 10</button>
+        <button class="qb" onclick="document.getElementById('create-bet').value=50;updatePreview()">€ 50</button>
+        <button class="qb" onclick="document.getElementById('create-bet').value=100;updatePreview()">€ 100</button>
+      </div>
+    </div>
+    <div class="field" style="text-align:left;margin-bottom:1rem;">
+      <label>CADENCE</label>
+      <select id="create-time" style="width:100%;padding:10px;background:var(--bg3);border:0.5px solid var(--border2);border-radius:6px;color:var(--fg);font-size:14px;">
+        <option value="60">⚡ Bullet 1+0</option>
+        <option value="180">🔥 Blitz 3+0</option>
+        <option value="300" selected>⚡ Blitz 5+0</option>
+        <option value="600">🎯 Rapide 10+0</option>
+        <option value="1800">♟ Classique 30+0</option>
+      </select>
+    </div>
+    <div class="field" style="text-align:left;margin-bottom:1.2rem;">
+      <label>COULEUR</label>
+      <select id="create-color" style="width:100%;padding:10px;background:var(--bg3);border:0.5px solid var(--border2);border-radius:6px;color:var(--fg);font-size:14px;">
+        <option value="rand">🎲 Aléatoire</option>
+        <option value="w">♔ Blancs</option>
+        <option value="b">♚ Noirs</option>
+      </select>
+    </div>
+    <p class="preview-txt" id="preview-txt">Pot : <b>€ 20.00</b> — Gain net si victoire : <b>€ 19.00</b></p>
+    <button class="btn btn-gold btn-full" onclick="confirmCreateGame()" style="margin-bottom:.8rem;">CRÉER LA PARTIE →</button>
+    <button class="btn btn-ghost btn-full" onclick="closeCreateModal()">Annuler</button>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
@@ -764,15 +803,29 @@ function initSocket() {
   socket.on('waiting_opponent', () => showWaiting(true));
 
   // Partie démarre
-  socket.on('game_start', ({ white, black, bet, pot, timeControl }) => {
+  socket.on('game_start', ({ gameId: gId, white, black, bet, pot, timeControl }) => {
+    // Cas matchmaking : currentGameId pas encore set, board pas initialisé
+    const isMatchmaking = !currentGameId;
+    if (gId) {
+      currentGameId = gId;
+      currentPot    = pot;
+    }
+
     showWaiting(false);
     gameStarted = true;
     gameActive  = true;
     waitingGame = false;
     timers.w = timeControl; timers.b = timeControl;
     localStorage.setItem('cb_current_game', currentGameId);
-    const betEur = bet / 100;
-    const potEur = pot / 100;
+
+    // Pour le matchmaking : initialiser le board et naviguer vers la page jeu
+    if (isMatchmaking) {
+      initBoard();
+      showPage('game');
+    }
+
+    const betEur  = bet / 100;
+    const potEur  = pot / 100;
     const commEur = Math.round(potEur * COMM * 100) / 100;
     const gainEur = potEur - commEur;
 
@@ -1028,7 +1081,8 @@ function stopSearching(){
   const sb=document.getElementById('searching-box');
   const fb=document.getElementById('find-btn');
   if(sb)sb.style.display='none';
-  if(fb){fb.disabled=false;fb.textContent='\U0001f50d CHERCHER UNE PARTIE';}
+  if(fb){fb.disabled=false;fb.textContent='🔍 CHERCHER UNE PARTIE';}
+}
 }
 function initMatchmakingListeners(){
   socket.on('match_cancelled',()=>{stopSearching();showToast('Recherche annulee');});
@@ -1040,6 +1094,18 @@ function initMatchmakingListeners(){
     if(el)el.textContent=count;
   });
   // color_assigned gere dans initSocket
+}
+
+function openCreateModal() {
+  updatePreview();
+  document.getElementById('create-overlay').style.display = 'flex';
+}
+function closeCreateModal() {
+  document.getElementById('create-overlay').style.display = 'none';
+}
+function confirmCreateGame() {
+  closeCreateModal();
+  createGame();
 }
 
 async function createGame() {

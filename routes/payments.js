@@ -423,60 +423,45 @@ router.get('/admin', auth, isAdmin, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-//  RETRAIT ADMIN — virement des commissions vers IBAN
+//  RETRAIT ADMIN — virement des commissions vers compte bancaire Stripe
 // ═══════════════════════════════════════════════════════════════
 router.post('/admin/withdraw', auth, isAdmin, async (req, res) => {
-  const { iban, amount_cents } = req.body;
+  const { amount_cents } = req.body;
 
-  if (!iban || typeof iban !== 'string' || iban.trim().length < 15)
-    return res.status(400).json({ error: 'IBAN invalide' });
-
-  // Récupérer les commissions disponibles
   const statsRow = await pool.query('SELECT total_commission, total_withdrawn_admin FROM admin_stats WHERE id=1');
   const stats = statsRow.rows[0];
   const available = parseInt(stats.total_commission) - parseInt(stats.total_withdrawn_admin || 0);
 
-  const cents = amount_cents ? parseInt(amount_cents) : available;
+  const cents = amount_cents ? Math.round(parseFloat(amount_cents) * 100) : available;
   if (!cents || cents <= 0)
     return res.status(400).json({ error: 'Aucune commission disponible' });
   if (cents > available)
-    return res.status(400).json({ error: `Montant demandé (${(cents/100).toFixed(2)}€) supérieur aux commissions disponibles (${(available/100).toFixed(2)}€)` });
+    return res.status(400).json({ error: `Montant (${(cents/100).toFixed(2)}euro) superieur aux commissions disponibles (${(available/100).toFixed(2)}euro)` });
   if (cents < 100)
-    return res.status(400).json({ error: 'Minimum 1€ pour un virement' });
+    return res.status(400).json({ error: 'Minimum 1euro pour un virement' });
 
   try {
-    // Créer un bank account token puis un payout Stripe vers l'IBAN
-    const bankToken = await stripe.tokens.create({
-      bank_account: {
-        country:  'FR',
-        currency: 'eur',
-        account_number: iban.replace(/\s/g, ''),
-        account_holder_name: 'ChessBet Admin',
-        account_holder_type: 'individual',
-      },
-    });
-
+    // Stripe envoie vers le compte bancaire par defaut configure dans le Dashboard
+    // Stripe Dashboard > Parametres > Virements bancaires > ajouter ton IBAN
     const payout = await stripe.payouts.create({
-      amount:   cents,
-      currency: 'eur',
-      method:   'standard',
-      destination: bankToken.id,
+      amount:      cents,
+      currency:    'eur',
+      method:      'standard',
       description: `Commissions ChessBet — ${new Date().toLocaleDateString('fr-FR')}`,
-      metadata: { type: 'admin_commission', iban_last4: iban.replace(/\s/g,'').slice(-4) },
+      metadata:    { type: 'admin_commission' },
     });
 
-    // Marquer les commissions comme retirées
     await pool.query(
       'UPDATE admin_stats SET total_withdrawn_admin = COALESCE(total_withdrawn_admin,0) + $1 WHERE id=1',
       [cents]
     );
 
-    console.log(`✅ Retrait admin ${(cents/100).toFixed(2)}€ → IBAN ...${iban.slice(-4)} — payout ${payout.id}`);
+    console.log(`Retrait admin ${(cents/100).toFixed(2)}euro — payout ${payout.id}`);
     res.json({
-      ok: true,
+      ok:        true,
       payout_id: payout.id,
-      amount: cents,
-      message: `✓ ${(cents/100).toFixed(2)}€ en route vers ton IBAN. Délai : 1-2 jours ouvrés.`,
+      amount:    cents,
+      message:   `${(cents/100).toFixed(2)}euro en route vers ton compte bancaire Stripe. Delai : 1-2 jours ouvres.`,
     });
 
   } catch (err) {
@@ -484,5 +469,4 @@ router.post('/admin/withdraw', auth, isAdmin, async (req, res) => {
     res.status(500).json({ error: err.message || 'Erreur Stripe' });
   }
 });
-
 module.exports = router;

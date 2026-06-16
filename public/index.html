@@ -544,17 +544,13 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       <h2>COMMISSIONS DISPONIBLES</h2>
       <div class="comm-total"><small>TOTAL</small><span id="comm-total-val">€ 0 accumulées — € 0.00 disponibles</span></div>
       <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap;margin-top:1rem;">
-        <div class="field" style="margin:0;flex:2;min-width:200px;">
-          <label>TON IBAN</label>
-          <input type="text" id="admin-iban-input" placeholder="FR76 3000 6000 0112 3456 7890 189">
-        </div>
         <div class="field" style="margin:0;flex:1;min-width:120px;">
           <label>MONTANT — max <span id="admin-withdraw-max">€ 0</span></label>
           <input type="number" id="admin-withdraw-amount" placeholder="0" min="1" step="0.01">
         </div>
         <button class="btn btn-gold" onclick="doWithdraw()">RETIRER →</button>
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:.8rem;">Virement SEPA via Stripe — délai 1-2 jours ouvrés. Laisse le montant vide pour tout retirer.</p>
+      <p style="font-size:11px;color:var(--muted);margin-top:.8rem;">Virement vers ton compte bancaire configuré dans Stripe Dashboard. Laisse le montant vide pour tout retirer. Délai : 1-2 jours ouvrés.</p>
     </div>
 
     <!-- Historique des retraits joueurs (automatisés via Stripe Connect) -->
@@ -1482,10 +1478,7 @@ async function doWithdrawPlayer() {
 //  ADMIN — RETRAIT DES COMMISSIONS (plateforme)
 // ============================================================
 async function doWithdraw() {
-  const iban   = document.getElementById('admin-iban-input').value.trim();
-  const amtRaw = document.getElementById('admin-withdraw-amount').value.trim();
-  if (!iban) return showToast('Entre ton IBAN');
-
+  const amtRaw  = document.getElementById('admin-withdraw-amount').value.trim();
   const amtEur  = parseFloat(amtRaw);
   const amtCents = amtEur > 0 ? Math.round(amtEur * 100) : null;
 
@@ -1493,7 +1486,6 @@ async function doWithdraw() {
   btn.disabled = true; btn.textContent = '⏳ En cours...';
 
   const r = await api('/api/payments/admin/withdraw', 'POST', {
-    iban,
     amount_cents: amtCents,
   });
 

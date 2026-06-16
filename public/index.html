@@ -264,8 +264,16 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 1.5r
       <h2>RECHARGER MON COMPTE</h2>
       <div class="deposit-row">
         <div class="field" style="margin:0;flex:1;">
-          <label>MONTANT (€)</label>
+          <label>MONTANT</label>
           <input type="number" id="dep-amount" value="50" min="5" step="5" oninput="updateDepositPreview()">
+        </div>
+        <div class="field" style="margin:0;flex:0.6;">
+          <label>DEVISE</label>
+          <select id="dep-currency" onchange="updateDepositPreview()">
+            <option value="eur">€ EUR</option>
+            <option value="usd">$ USD</option>
+            <option value="gbp">£ GBP</option>
+          </select>
         </div>
         <div class="field" style="margin:0;flex:1;">
           <label>MÉTHODE</label>
@@ -1279,26 +1287,33 @@ function setStatus(msg, cls) {
 // ============================================================
 //  DÉPÔT
 // ============================================================
+const CURRENCY_SYMBOLS = { eur: '€', usd: '$', gbp: '£' };
+
 function updateDepositPreview() {
-  const amount = parseFloat(document.getElementById('dep-amount').value) || 0;
-  const charge = depositChargeAmount(amount);
-  const fee    = (charge - amount).toFixed(2);
+  const amount   = parseFloat(document.getElementById('dep-amount').value) || 0;
+  const currency = document.getElementById('dep-currency') ? document.getElementById('dep-currency').value : 'eur';
+  const sym      = CURRENCY_SYMBOLS[currency] || '€';
+  const charge   = depositChargeAmount(amount); // estimation approx (calcul exact fait côté serveur)
+  const fee      = (charge - amount).toFixed(2);
   document.getElementById('dep-preview-txt').innerHTML =
-    amount > 0 ? `Tu seras crédité de <b>€ ${amount.toFixed(2)}</b> — Montant facturé : <b>€ ${charge.toFixed(2)}</b> (frais de traitement : € ${fee})` : '';
+    amount > 0 ? `Montant facturé : <b>${sym} ${charge.toFixed(2)}</b> (frais : ${sym} ${fee}) — crédité sur ton solde en euros` : '';
 }
 
 async function doDeposit() {
-  const amount = parseFloat(document.getElementById('dep-amount').value);
-  if (!amount || amount < 5) return showToast('Minimum 5€');
-  const r = await api('/api/payments/deposit', 'POST', { amount });
+  const amount   = parseFloat(document.getElementById('dep-amount').value);
+  const currency = document.getElementById('dep-currency') ? document.getElementById('dep-currency').value : 'eur';
+  if (!amount || amount < 5) return showToast('Minimum 5');
+  const r = await api('/api/payments/deposit', 'POST', { amount, currency });
   if (r.error) return showToast(r.error);
   window.location.href = r.url; // Redirige vers Stripe
 }
 
 async function doDepositModal() {
-  const amount = parseFloat(document.getElementById('dep-modal-amt').value);
-  if (!amount || amount < 5) return showToast('Minimum 5€');
-  const r = await api('/api/payments/deposit', 'POST', { amount });
+  const amount   = parseFloat(document.getElementById('dep-modal-amt').value);
+  const currencyEl = document.getElementById('dep-modal-currency');
+  const currency = currencyEl ? currencyEl.value : 'eur';
+  if (!amount || amount < 5) return showToast('Minimum 5');
+  const r = await api('/api/payments/deposit', 'POST', { amount, currency });
   if (r.error) return showToast(r.error);
   window.location.href = r.url;
 }

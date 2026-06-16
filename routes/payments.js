@@ -15,17 +15,80 @@ function depositChargeCents(creditCents) {
   return Math.ceil((creditCents + DEPOSIT_FEE_FIXED_CENTS) / (1 - DEPOSIT_FEE_PERCENT / 100));
 }
 
+// ── Multi-devises : dépôts en USD/GBP convertis vers EUR ──────
+// Solde interne TOUJOURS en EUR. Stripe facture en devise locale,
+// le webhook crédite le joueur avec le montant EUR converti.
+const SUPPORTED_CURRENCIES = ['eur', 'usd', 'gbp'];
+let fxCache = { rates: { eur: 1 }, fetchedAt: 0 };
+const FX_CACHE_TTL_MS = 60 * 60 * 1000; // 1h
+
+async function getFxRates() {
+  const now = Date.now();
+  if (now - fxCache.fetchedAt < FX_CACHE_TTL_MS) return fxCache.rates;
+  try {
+    const r = await fetch('https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD,GBP');
+    const data = await r.json();
+    fxCache = {
+      rates: { eur: 1, usd: data.rates.USD, gbp: data.rates.GBP },
+      fetchedAt: now,
+    };
+  } catch (e) {
+    console.error('FX fetch erreur, utilisation du cache précédent:', e.message);
+    if (!fxCache.fetchedAt) fxCache = { rates: { eur: 1, usd: 1.08, gbp: 0.85 }, fetchedAt: now };
+  }
+  return fxCache.rates;
+}
+
+// Convertit un montant en devise locale → centimes EUR
+async function toCentsEur(amount, currency) {
+  const rates = await getFxRates();
+  const rate = rates[currency.toLowerCase()];
+  if (!rate) throw new Error(`Devise non supportée: ${currency}`);
+  const amountEur = amount / rate; // ex: 10 USD / 1.08 = 9.26 EUR
+  return Math.round(amountEur * 100);
+}
+
+// Convertit centimes EUR → montant dans la devise locale (pour affichage Stripe)
+async function fromCentsEur(cents, currency) {
+  const rates = await getFxRates();
+  const rate = rates[currency.toLowerCase()];
+  if (!rate) throw new Error(`Devise non supportée: ${currency}`);
+  return Math.round((cents / 100) * rate * 100); // renvoie en sous-unité (cents) de la devise cible
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  DÉPÔT
 // ═══════════════════════════════════════════════════════════════
 router.post('/deposit', auth, async (req, res) => {
-  const amount = parseFloat(req.body.amount);
-  if (!amount || amount < 5)  return res.status(400).json({ error: 'Minimum 5€' });
-  if (amount > 5000)          return res.status(400).json({ error: 'Maximum 5000€' });
+  const amount   = parseFloat(req.body.amount);
+  const currency = (req.body.currency || 'eur').toLowerCase();
 
-  const creditCents = Math.round(amount * 100);
-  const chargeCents = depositChargeCents(creditCents);
-  const feeCents    = chargeCents - creditCents;
+  if (!SUPPORTED_CURRENCIES.includes(currency))
+    return res.status(400).json({ error: 'Devise non supportée' });
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Montant invalide' });
+
+  // Convertir le montant saisi (devise locale) vers centimes EUR pour le crédit interne
+  let creditCents;
+  try {
+    creditCents = await toCentsEur(amount, currency);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  if (creditCents < 500)    return res.status(400).json({ error: 'Minimum équivalent à 5€' });
+  if (creditCents > 500000) return res.status(400).json({ error: 'Maximum équivalent à 5000€' });
+
+  const chargeCents = depositChargeCents(creditCents); // en EUR
+  const feeCents    = chargeCents - creditCents;        // en EUR
+
+  // Reconvertir les montants à facturer (EUR) vers la devise locale pour Stripe
+  let chargeLocal, feeLocal;
+  try {
+    chargeLocal = currency === 'eur' ? chargeCents : await fromCentsEur(chargeCents, currency);
+    feeLocal    = currency === 'eur' ? feeCents    : await fromCentsEur(feeCents, currency);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
 
   try {
     const r = await pool.query('SELECT stripe_customer_id,email,username FROM users WHERE id=$1', [req.user.id]);
@@ -44,10 +107,10 @@ router.post('/deposit', auth, async (req, res) => {
     }
 
     const lineItems = [
-      { price_data: { currency: 'eur', product_data: { name: 'Dépôt ChessBet' }, unit_amount: creditCents }, quantity: 1 },
+      { price_data: { currency, product_data: { name: 'Dépôt ChessBet' }, unit_amount: chargeLocal - feeLocal }, quantity: 1 },
     ];
-    if (feeCents > 0) {
-      lineItems.push({ price_data: { currency: 'eur', product_data: { name: 'Frais de traitement' }, unit_amount: feeCents }, quantity: 1 });
+    if (feeLocal > 0) {
+      lineItems.push({ price_data: { currency, product_data: { name: 'Frais de traitement' }, unit_amount: feeLocal }, quantity: 1 });
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -69,7 +132,13 @@ router.post('/deposit', auth, async (req, res) => {
       [req.user.id, 'deposit', creditCents, session.id, 'pending']
     );
 
-    res.json({ url: session.url, creditAmount: creditCents/100, chargeAmount: chargeCents/100, feeAmount: feeCents/100 });
+    res.json({
+      url: session.url,
+      creditAmount: creditCents/100,        // toujours en EUR (solde interne)
+      chargeAmount: chargeLocal/100,         // dans la devise choisie
+      feeAmount:    feeLocal/100,            // dans la devise choisie
+      currency,
+    });
   } catch (e) {
     console.error('Erreur dépôt:', e.message);
     res.status(500).json({ error: e.message || 'Erreur Stripe' });
@@ -432,7 +501,7 @@ router.post('/admin/withdraw', auth, isAdmin, async (req, res) => {
   const stats = statsRow.rows[0];
   const available = parseInt(stats.total_commission) - parseInt(stats.total_withdrawn_admin || 0);
 
-  const cents = amount_cents ? Math.round(parseFloat(amount_cents) * 100) : available;
+  const cents = amount_cents ? Math.round(parseFloat(amount_cents)) : available;
   if (!cents || cents <= 0)
     return res.status(400).json({ error: 'Aucune commission disponible' });
   if (cents > available)

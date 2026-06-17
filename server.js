@@ -1,22 +1,68 @@
 require('dotenv').config();
-const express    = require('express');
-const http       = require('http');
-const { Server } = require('socket.io');
-const cors       = require('cors');
-const helmet     = require('helmet');
-const jwt        = require('jsonwebtoken');
-const path       = require('path');
+const express      = require('express');
+const http         = require('http');
+const { Server }   = require('socket.io');
+const cors         = require('cors');
+const helmet       = require('helmet');
+const rateLimit    = require('express-rate-limit');
+const jwt          = require('jsonwebtoken');
+const path         = require('path');
 const { pool, initDB } = require('./db');
 
 const app    = express();
+
+// Render est derrière un reverse-proxy : nécessaire pour que express-rate-limit
+// et req.ip identifient correctement l'IP réelle du visiteur (sinon tout le monde
+// partage la même IP vue par le serveur et se fait bloquer ensemble)
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
-const io     = new Server(server, {
-  cors: { origin: '*', methods: ['GET','POST'] }
+
+// ── CORS restreint à ton propre domaine ──────────────────────
+// FRONTEND_URL doit être défini dans les variables d'env Render
+// (ex: https://chessbet-y4ay.onrender.com). En dev local, fallback sur '*'.
+const ALLOWED_ORIGINS = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL]
+  : '*';
+
+const io = new Server(server, {
+  cors: { origin: ALLOWED_ORIGINS, methods: ['GET','POST'] }
 });
 
 // ── Middleware ──────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors());
+app.use(helmet()); // CSP par défaut réactivée
+app.use(cors({ origin: ALLOWED_ORIGINS }));
+
+// ── Rate limiting — anti brute-force / anti-spam ─────────────
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 20,                  // 20 tentatives par IP / 15min
+  message: { error: 'Trop de tentatives, réessaie dans quelques minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const paymentLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 min
+  max: 10,
+  message: { error: 'Trop de requêtes, ralentis un peu.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const globalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120, // 120 req/min/IP toutes routes API confondues
+  message: { error: 'Trop de requêtes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/auth/login',    authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api/payments',      paymentLimiter);
+app.use('/api', globalApiLimiter);
+
 // Webhook Stripe : raw body AVANT express.json()
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
@@ -34,6 +80,30 @@ const games = new Map();
 // Quand un joueur cherche une partie, on vérifie si quelqu'un attend déjà
 // avec la même mise et la même cadence. Si oui → on lance la partie direct.
 const matchQueue = {};
+
+// ── Anti-spam sockets — limite les actions sensibles par joueur ──
+// Évite qu'un client triché spamme find_match/create_game pour saturer la DB
+const socketActionLog = new Map(); // uid -> [timestamps]
+const SOCKET_ACTION_WINDOW_MS = 10 * 1000; // 10s
+const SOCKET_ACTION_MAX       = 8;         // 8 actions / 10s
+
+function isSocketRateLimited(uid) {
+  const now = Date.now();
+  const log = (socketActionLog.get(uid) || []).filter(t => now - t < SOCKET_ACTION_WINDOW_MS);
+  log.push(now);
+  socketActionLog.set(uid, log);
+  return log.length > SOCKET_ACTION_MAX;
+}
+
+// Nettoyage périodique pour éviter une fuite mémoire sur le long terme
+setInterval(() => {
+  const now = Date.now();
+  for (const [uid, log] of socketActionLog.entries()) {
+    const fresh = log.filter(t => now - t < SOCKET_ACTION_WINDOW_MS);
+    if (fresh.length === 0) socketActionLog.delete(uid);
+    else socketActionLog.set(uid, fresh);
+  }
+}, 60 * 1000);
 
 // ── Auth Socket.io ──────────────────────────────────────────
 io.use((socket, next) => {
@@ -53,6 +123,7 @@ io.on('connection', (socket) => {
 
   // Créer une partie : débite immédiatement la mise du créateur
   socket.on('create_game', async ({ gameId, bet, timeControl, color }) => {
+    if (isSocketRateLimited(uid)) return socket.emit('error', 'Trop de requêtes, patiente quelques secondes.');
     const VALID_TIME_CONTROLS = [60, 180, 300, 600, 1800];
     const MIN_BET_CENTS = 500;   // 5€
     const MAX_BET_CENTS = 500000; // 5000€
@@ -137,6 +208,7 @@ io.on('connection', (socket) => {
 
   // ── MATCHMAKING ────────────────────────────────────────────
   socket.on('find_match', async ({ bet, timeControl }) => {
+    if (isSocketRateLimited(uid)) return socket.emit('match_error', 'Trop de requêtes, patiente quelques secondes.');
     const VALID_BETS = [500, 1000, 5000, 10000]; // 5, 10, 50, 100€ en centimes
     const VALID_TC   = [60, 180, 300, 600, 1800];
 
@@ -272,6 +344,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join_game', async ({ gameId }) => {
+    if (isSocketRateLimited(uid)) return socket.emit('error', 'Trop de requêtes, patiente quelques secondes.');
     const game = games.get(gameId);
     if (!game || game.finished) return socket.emit('error', 'Partie introuvable');
 

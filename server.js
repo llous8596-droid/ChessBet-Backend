@@ -1,68 +1,38 @@
 require('dotenv').config();
-const express      = require('express');
-const http         = require('http');
-const { Server }   = require('socket.io');
-const cors         = require('cors');
-const helmet       = require('helmet');
-const rateLimit    = require('express-rate-limit');
-const jwt          = require('jsonwebtoken');
-const path         = require('path');
-const { pool, initDB } = require('./db');
+const express    = require('express');
+const http       = require('http');
+const { Server } = require('socket.io');
+const cors       = require('cors');
+const helmet     = require('helmet');
+const jwt        = require('jsonwebtoken');
+const path       = require('path');
+const { pool, initDB, refundOrphanedGames } = require('./db');
+const chess = require('./chess-engine');
 
 const app    = express();
-
-// Render est derrière un reverse-proxy : nécessaire pour que express-rate-limit
-// et req.ip identifient correctement l'IP réelle du visiteur (sinon tout le monde
-// partage la même IP vue par le serveur et se fait bloquer ensemble)
-app.set('trust proxy', 1);
-
+app.set('trust proxy', 1); // Render est derrière un proxy : nécessaire pour que req.ip soit correct
 const server = http.createServer(app);
 
-// ── CORS restreint à ton propre domaine ──────────────────────
-// FRONTEND_URL doit être défini dans les variables d'env Render
-// (ex: https://chessbet-y4ay.onrender.com). En dev local, fallback sur '*'.
-const ALLOWED_ORIGINS = process.env.FRONTEND_URL
-  ? [process.env.FRONTEND_URL]
-  : '*';
+// Liste des origines autorisées (frontend séparé type Netlify + le serveur lui-même)
+const allowedOrigins = [process.env.FRONTEND_URL].filter(Boolean);
 
-const io = new Server(server, {
-  cors: { origin: ALLOWED_ORIGINS, methods: ['GET','POST'] }
-});
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Autorise les requêtes sans origine (curl, apps mobiles, requêtes same-origin)
+    // et celles qui correspondent à FRONTEND_URL.
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    callback(new Error('Origine non autorisée par CORS'));
+  },
+  methods: ['GET', 'POST'],
+};
+
+const io = new Server(server, { cors: corsOptions });
 
 // ── Middleware ──────────────────────────────────────────────
-app.use(helmet()); // CSP par défaut réactivée
-app.use(cors({ origin: ALLOWED_ORIGINS }));
-
-// ── Rate limiting — anti brute-force / anti-spam ─────────────
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 min
-  max: 20,                  // 20 tentatives par IP / 15min
-  message: { error: 'Trop de tentatives, réessaie dans quelques minutes.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const paymentLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 min
-  max: 10,
-  message: { error: 'Trop de requêtes, ralentis un peu.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const globalApiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120, // 120 req/min/IP toutes routes API confondues
-  message: { error: 'Trop de requêtes.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.use('/api/auth/login',    authLimiter);
-app.use('/api/auth/register', authLimiter);
-app.use('/api/payments',      paymentLimiter);
-app.use('/api', globalApiLimiter);
-
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors(corsOptions));
 // Webhook Stripe : raw body AVANT express.json()
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
@@ -81,29 +51,26 @@ const games = new Map();
 // avec la même mise et la même cadence. Si oui → on lance la partie direct.
 const matchQueue = {};
 
-// ── Anti-spam sockets — limite les actions sensibles par joueur ──
-// Évite qu'un client triché spamme find_match/create_game pour saturer la DB
-const socketActionLog = new Map(); // uid -> [timestamps]
-const SOCKET_ACTION_WINDOW_MS = 10 * 1000; // 10s
-const SOCKET_ACTION_MAX       = 8;         // 8 actions / 10s
-
-function isSocketRateLimited(uid) {
+// ── Rate limiting pour les événements Socket.io sensibles ───
+// Empêche le spam de create_game/find_match/join_game (DoS léger, abus de matchmaking)
+const socketEventBuckets = new Map(); // `${uid}:${event}` → timestamps[]
+function checkSocketRateLimit(uid, event, max, windowMs) {
+  const key = `${uid}:${event}`;
   const now = Date.now();
-  const log = (socketActionLog.get(uid) || []).filter(t => now - t < SOCKET_ACTION_WINDOW_MS);
-  log.push(now);
-  socketActionLog.set(uid, log);
-  return log.length > SOCKET_ACTION_MAX;
+  const timestamps = (socketEventBuckets.get(key) || []).filter(t => now - t < windowMs);
+  if (timestamps.length >= max) return false;
+  timestamps.push(now);
+  socketEventBuckets.set(key, timestamps);
+  return true;
 }
-
-// Nettoyage périodique pour éviter une fuite mémoire sur le long terme
 setInterval(() => {
   const now = Date.now();
-  for (const [uid, log] of socketActionLog.entries()) {
-    const fresh = log.filter(t => now - t < SOCKET_ACTION_WINDOW_MS);
-    if (fresh.length === 0) socketActionLog.delete(uid);
-    else socketActionLog.set(uid, fresh);
+  for (const [key, ts] of socketEventBuckets.entries()) {
+    const filtered = ts.filter(t => now - t < 5 * 60 * 1000);
+    if (filtered.length === 0) socketEventBuckets.delete(key);
+    else socketEventBuckets.set(key, filtered);
   }
-}, 60 * 1000);
+}, 5 * 60 * 1000);
 
 // ── Auth Socket.io ──────────────────────────────────────────
 io.use((socket, next) => {
@@ -123,7 +90,9 @@ io.on('connection', (socket) => {
 
   // Créer une partie : débite immédiatement la mise du créateur
   socket.on('create_game', async ({ gameId, bet, timeControl, color }) => {
-    if (isSocketRateLimited(uid)) return socket.emit('error', 'Trop de requêtes, patiente quelques secondes.');
+    if (!checkSocketRateLimit(uid, 'create_game', 10, 60 * 1000))
+      return socket.emit('error', 'Trop de tentatives, réessaie dans une minute');
+
     const VALID_TIME_CONTROLS = [60, 180, 300, 600, 1800];
     const MIN_BET_CENTS = 500;   // 5€
     const MAX_BET_CENTS = 500000; // 5000€
@@ -168,6 +137,7 @@ io.on('connection', (socket) => {
       lastTick: null,
       finished: false,
       moveHistory: [],
+      chessState: chess.newGameState(),
     });
     socket.join(gameId);
     socket.emit('balance_update', { delta: -bet });
@@ -208,7 +178,9 @@ io.on('connection', (socket) => {
 
   // ── MATCHMAKING ────────────────────────────────────────────
   socket.on('find_match', async ({ bet, timeControl }) => {
-    if (isSocketRateLimited(uid)) return socket.emit('match_error', 'Trop de requêtes, patiente quelques secondes.');
+    if (!checkSocketRateLimit(uid, 'find_match', 15, 60 * 1000))
+      return socket.emit('match_error', 'Trop de tentatives, réessaie dans une minute');
+
     const VALID_BETS = [500, 1000, 5000, 10000]; // 5, 10, 50, 100€ en centimes
     const VALID_TC   = [60, 180, 300, 600, 1800];
 
@@ -283,6 +255,7 @@ io.on('connection', (socket) => {
           finished: false,
           moveHistory: [],
           creatorId: null,
+          chessState: chess.newGameState(),
         });
 
       } catch (e) {
@@ -344,7 +317,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join_game', async ({ gameId }) => {
-    if (isSocketRateLimited(uid)) return socket.emit('error', 'Trop de requêtes, patiente quelques secondes.');
+    if (!checkSocketRateLimit(uid, 'join_game', 15, 60 * 1000))
+      return socket.emit('error', 'Trop de tentatives, réessaie dans une minute');
+
     const game = games.get(gameId);
     if (!game || game.finished) return socket.emit('error', 'Partie introuvable');
 
@@ -405,14 +380,27 @@ io.on('connection', (socket) => {
     broadcastLobby();
   });
 
-  // Recevoir un coup
+  // Recevoir un coup — VALIDÉ par le moteur d'échecs serveur (source de vérité)
   socket.on('move', ({ gameId, move }) => {
+    if (!checkSocketRateLimit(uid, 'move', 30, 10 * 1000)) return; // anti-flood, généreux pour le bullet
     const game = games.get(gameId);
     if (!game || game.finished) return;
     const isWhite = game.players.white === uid;
     const isBlack = game.players.black === uid;
-    if (!isWhite && !isBlack) return;
-    if ((game.turn === 'w' && !isWhite) || (game.turn === 'b' && !isBlack)) return;
+    if (!isWhite && !isBlack) return socket.emit('error', 'Vous ne participez pas à cette partie');
+
+    const myColor = isWhite ? 'w' : 'b';
+    if (game.turn !== myColor) return socket.emit('error', 'Pas votre tour');
+
+    const { fr, fc, tr, tc, promo } = move || {};
+    const result = chess.tryApplyMove(game.chessState, myColor, fr, fc, tr, tc, promo);
+    if (!result.ok) {
+      console.warn(`⚠️ Coup illégal rejeté de ${uname} (partie ${gameId}): ${result.error}`);
+      return socket.emit('error', result.error);
+    }
+
+    // Coup légal et validé — on met à jour l'état autoritaire de la partie
+    game.chessState = result.state;
 
     // Mettre à jour le timer du joueur qui vient de jouer
     const now = Date.now();
@@ -422,18 +410,24 @@ io.on('connection', (socket) => {
     }
     game.lastTick = now;
     game.turn = game.turn === 'w' ? 'b' : 'w';
-    game.moveHistory.push(move);
 
-    io.to(gameId).emit('move', { move, turn: game.turn, timers: game.timers });
-  });
+    // Reconstruire un objet move complet (avec le flag déterminé par le serveur,
+    // jamais celui envoyé par le client) pour le diffuser aux deux joueurs.
+    const validatedMove = { fr, fc, tr, tc, flag: result.flag, promo: result.promo };
+    game.moveHistory.push(validatedMove);
 
-  // Fin de partie signalée par le client (mat, pat, nulle, etc.)
-  socket.on('game_over', ({ gameId, result, reason }) => {
-    const game = games.get(gameId);
-    if (!game || game.finished) return;
-    game.finished = true;
-    clearGameTimer(gameId);
-    settle(gameId, game, result, reason);
+    socket.to(gameId).emit('move', { move: validatedMove, turn: game.turn, timers: game.timers });
+    // Confirmer au joueur qui a joué (sans renvoyer le coup, déjà appliqué localement chez lui)
+    socket.emit('move_ack', { turn: game.turn, timers: game.timers });
+
+    // Vérifier si la partie est terminée (mat, pat, nulle) — déterminé par le serveur, jamais par le client
+    const end = chess.checkGameEnd(game.chessState);
+    if (end) {
+      game.finished = true;
+      clearGameTimer(gameId);
+      io.to(gameId).emit('game_over', { result: end.result, reason: end.reason });
+      settle(gameId, game, end.result, end.reason);
+    }
   });
 
   // Annuler une partie créée si aucun adversaire n'a rejoint
@@ -464,9 +458,12 @@ io.on('connection', (socket) => {
   socket.on('resign', ({ gameId }) => {
     const game = games.get(gameId);
     if (!game || game.finished) return;
+    const isWhite = game.players.white === uid;
+    const isBlack = game.players.black === uid;
+    if (!isWhite && !isBlack) return socket.emit('error', 'Vous ne participez pas à cette partie');
     game.finished = true;
     clearGameTimer(gameId);
-    const result = game.players.white === uid ? 'black' : 'white';
+    const result = isWhite ? 'black' : 'white';
     io.to(gameId).emit('game_over', { result, reason: 'resign' });
     settle(gameId, game, result, 'resign');
   });
@@ -475,6 +472,9 @@ io.on('connection', (socket) => {
   socket.on('offer_draw', ({ gameId }) => {
     const game = games.get(gameId);
     if (!game || game.finished) return;
+    const isWhite = game.players.white === uid;
+    const isBlack = game.players.black === uid;
+    if (!isWhite && !isBlack) return;
     // Notifier l'adversaire
     socket.to(gameId).emit('draw_offered', { from: uname });
   });
@@ -483,6 +483,9 @@ io.on('connection', (socket) => {
   socket.on('accept_draw', ({ gameId }) => {
     const game = games.get(gameId);
     if (!game || game.finished) return;
+    const isWhite = game.players.white === uid;
+    const isBlack = game.players.black === uid;
+    if (!isWhite && !isBlack) return;
     game.finished = true;
     clearGameTimer(gameId);
     io.to(gameId).emit('game_over', { result: 'draw', reason: 'accord mutuel' });
@@ -552,20 +555,31 @@ async function settle(gameId, game, result, reason) {
 
     if (result === 'draw') {
       const refund = Math.round(game.bet - commission / 2);
-      if (game.players.white) await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [refund, game.players.white]);
-      if (game.players.black) await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [refund, game.players.black]);
+      if (game.players.white) {
+        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [refund, game.players.white]);
+        await client.query('INSERT INTO transactions(user_id,type,amount,status) VALUES($1,$2,$3,$4)',
+          [game.players.white, 'commission', Math.round(commission / 2), 'completed']);
+      }
+      if (game.players.black) {
+        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [refund, game.players.black]);
+        await client.query('INSERT INTO transactions(user_id,type,amount,status) VALUES($1,$2,$3,$4)',
+          [game.players.black, 'commission', Math.round(commission / 2), 'completed']);
+      }
+      // Marquer la partie comme terminée en base même en cas de nulle,
+      // sinon refundOrphanedGames() la rembourserait une deuxième fois après un redémarrage.
+      await client.query("UPDATE games SET finished=true, result='draw', reason=$1, commission=$2 WHERE id=$3",
+        [(reason || '').slice(0, 30), commission, gameId]);
     } else {
       const winnerId = result === 'white' ? game.players.white : game.players.black;
       await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [winnerGain, winnerId]);
       await client.query('UPDATE games SET finished=true,result=$1,reason=$2,commission=$3,winner_id=$4 WHERE id=$5',
-        [result, reason, commission, winnerId, gameId]);
+        [result, (reason || '').slice(0, 30), commission, winnerId, gameId]);
+      await client.query('INSERT INTO transactions(user_id,type,amount,status) VALUES($1,$2,$3,$4)',
+        [winnerId, 'commission', commission, 'completed']);
     }
 
     await client.query('UPDATE admin_stats SET total_commission=total_commission+$1, total_volume=total_volume+$2, total_games=total_games+1 WHERE id=1',
       [commission, pot]);
-
-    await client.query('INSERT INTO transactions(user_id,type,amount,status) VALUES($1,$2,$3,$4)',
-      [result === 'white' ? game.players.white : game.players.black, 'commission', commission, 'completed']);
 
     await client.query('COMMIT');
   } catch (e) {
@@ -641,6 +655,7 @@ app.use((err, req, res, next) => {
 // ── Démarrage ────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
-initDB().then(() => {
+initDB().then(async () => {
+  await refundOrphanedGames();
   server.listen(PORT, () => console.log(`✅ ChessBet sur http://localhost:${PORT}`));
 }).catch(e => { console.error('Erreur DB:', e); process.exit(1); });

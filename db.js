@@ -112,4 +112,38 @@ async function initDB() {
   console.log('✅ Base de données prête');
 }
 
-module.exports = { pool, initDB };
+// Rembourse automatiquement les parties restées "non terminées" en base après
+// un crash ou un redémarrage du serveur (les parties en mémoire sont perdues,
+// mais l'argent reste débité des deux joueurs sans que personne ne puisse jouer).
+// Ne touche que les parties vieilles de plus de 10 minutes, pour ne pas interférer
+// avec des parties en cours pendant un redéploiement très rapide.
+async function refundOrphanedGames() {
+  const client = await pool.connect();
+  try {
+    const r = await client.query(`
+      SELECT id, white_id, black_id, bet FROM games
+      WHERE finished = false AND created_at < NOW() - INTERVAL '10 minutes'
+    `);
+    if (!r.rows.length) return;
+
+    for (const game of r.rows) {
+      await client.query('BEGIN');
+      try {
+        if (game.white_id) await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [game.bet, game.white_id]);
+        if (game.black_id) await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [game.bet, game.black_id]);
+        await client.query("UPDATE games SET finished=true, result='aborted', reason='remboursée-redémarrage' WHERE id=$1", [game.id]);
+        await client.query('COMMIT');
+        console.log(`♻️ Partie orpheline ${game.id} remboursée (${game.bet/100}€ à chaque joueur)`);
+      } catch (e) {
+        await client.query('ROLLBACK');
+        console.error(`Erreur remboursement partie orpheline ${game.id}:`, e);
+      }
+    }
+  } catch (e) {
+    console.error('Erreur recherche parties orphelines:', e);
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { pool, initDB, refundOrphanedGames };

@@ -2,6 +2,7 @@ const router = require('express').Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { pool } = require('../db');
 const { auth, isAdmin } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimit');
 
 // ── Frais de dépôt (répercutés sur le joueur) ─────────────────
 // Tu peux les augmenter depuis les variables d'env dans Render
@@ -59,7 +60,7 @@ async function fromCentsEur(cents, currency) {
 // ═══════════════════════════════════════════════════════════════
 //  DÉPÔT
 // ═══════════════════════════════════════════════════════════════
-router.post('/deposit', auth, async (req, res) => {
+router.post('/deposit', auth, rateLimit(10, 10 * 60 * 1000, 'deposit', req => req.user.id), async (req, res) => {
   const amount   = parseFloat(req.body.amount);
   const currency = (req.body.currency || 'eur').toLowerCase();
 
@@ -278,7 +279,7 @@ async function getOrCreateConnectAccount(userId) {
   return account.id;
 }
 
-router.post('/connect/onboard', auth, async (req, res) => {
+router.post('/connect/onboard', auth, rateLimit(10, 10 * 60 * 1000, 'connect-onboard', req => req.user.id), async (req, res) => {
   try {
     const accountId = await getOrCreateConnectAccount(req.user.id);
     const link      = await stripe.accountLinks.create({
@@ -333,7 +334,7 @@ router.get('/connect/status', auth, async (req, res) => {
 //  - En cas d'échec Stripe → remboursement immédiat
 //  - En cas d'échec payout ultérieur → remboursement via webhook payout.failed
 // ═══════════════════════════════════════════════════════════════
-router.post('/withdraw', auth, async (req, res) => {
+router.post('/withdraw', auth, rateLimit(5, 10 * 60 * 1000, 'withdraw', req => req.user.id), async (req, res) => {
   const cents = Math.round(parseFloat(req.body.amount) * 100);
   if (!Number.isFinite(cents) || cents < WITHDRAW_MIN_CENTS)
     return res.status(400).json({ error: `Retrait minimum : ${WITHDRAW_MIN_CENTS/100}€` });
